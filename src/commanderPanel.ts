@@ -5,6 +5,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as posix from 'node:path/posix';
+import { PassThrough } from 'node:stream';
 import { Client, FileInfo } from 'basic-ftp';
 
 type Pane = 'local' | 'remote';
@@ -29,6 +30,7 @@ interface PanelMessage {
   type: string;
   pane?: Pane;
   path?: string;
+  name?: string;
   source?: Pane;
   password?: string;
   profile?: Partial<ConnectionProfile>;
@@ -39,6 +41,31 @@ const PASSWORD_KEY = 'bm.ftp.password';
 
 export class CommanderPanel {
   private static current: CommanderPanel | undefined;
+  private static readonlyDocuments = new Map<string, { panel: CommanderPanel; path: string; content?: string }>();
+
+  static registerReadonlyDocuments(): vscode.Disposable {
+    const readonlyStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 10);
+    readonlyStatus.text = '$(lock) FTP · Read-only';
+    readonlyStatus.tooltip = 'This is a read-only copy opened from an FTP server. Changes cannot be saved to the server.';
+    const updateReadonlyStatus = (editor: vscode.TextEditor | undefined): void => {
+      if (editor?.document.uri.scheme === 'bm-ftp-readonly') readonlyStatus.show();
+      else readonlyStatus.hide();
+    };
+    updateReadonlyStatus(vscode.window.activeTextEditor);
+    const editorListener = vscode.window.onDidChangeActiveTextEditor(updateReadonlyStatus);
+    const provider = vscode.workspace.registerTextDocumentContentProvider('bm-ftp-readonly', {
+      provideTextDocumentContent: async (uri) => {
+        const document = CommanderPanel.readonlyDocuments.get(uri.authority);
+        if (!document) throw new Error('The FTP document is no longer available.');
+        if (document.content === undefined) document.content = await document.panel.readRemoteFile(document.path);
+        return document.content;
+      }
+    });
+    const closeListener = vscode.workspace.onDidCloseTextDocument((document) => {
+      if (document.uri.scheme === 'bm-ftp-readonly') CommanderPanel.readonlyDocuments.delete(document.uri.authority);
+    });
+    return vscode.Disposable.from(provider, closeListener, editorListener, readonlyStatus);
+  }
 
   static createOrShow(context: vscode.ExtensionContext): void {
     const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
@@ -102,7 +129,7 @@ export class CommanderPanel {
       `<link${before}href="${toWebviewUri(href)}"${after}>`
     );
     const csp = this.panel.webview.cspSource;
-    html = html.replace('<head>', `<head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${csp} data:; style-src ${csp} 'unsafe-inline'; script-src 'nonce-${nonce}' ${csp}; font-src ${csp};">`);
+    html = html.replace('<head>', `<head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${csp} data:; style-src ${csp} 'unsafe-inline' https://fonts.googleapis.com; script-src 'nonce-${nonce}' ${csp}; font-src ${csp} https://fonts.gstatic.com;">`);
     return html;
   }
 
@@ -131,6 +158,12 @@ export class CommanderPanel {
           break;
         case 'copy':
           await this.copy(message.source, message.path);
+          break;
+        case 'create-folder':
+          await this.createFolder(message.pane);
+          break;
+        case 'open-file':
+          await this.openFile(message.pane, message.path);
           break;
       }
     } catch (error) {
@@ -220,6 +253,64 @@ export class CommanderPanel {
     this.reportTransfer(`Downloaded ${remoteName}.`);
   }
 
+  private async createFolder(pane: Pane | undefined): Promise<void> {
+    if (!pane) return;
+    if (pane === 'remote') this.requireConnection();
+    const name = await vscode.window.showInputBox({
+      prompt: `Create a folder in ${pane === 'local' ? this.localPath : this.remotePath}`,
+      placeHolder: 'Folder name',
+      validateInput: validateFolderName
+    });
+    if (name === undefined) return;
+    const folderName = name.trim();
+
+    if (pane === 'local') {
+      await fs.mkdir(path.join(this.localPath, folderName));
+    } else {
+      const target = posix.join(this.remotePath, folderName);
+      await this.client.ensureDir(target);
+      await this.client.cd(this.remotePath);
+    }
+    this.reportTransfer(`Created folder ${folderName}.`);
+  }
+
+  private async openFile(pane: Pane | undefined, selectedPath: string | undefined): Promise<void> {
+    if (!pane || !selectedPath) return;
+    if (pane === 'local') {
+      const filePath = path.resolve(selectedPath);
+      if (!(await fs.stat(filePath)).isFile()) throw new Error('Select a file to open.');
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+      await vscode.window.showTextDocument(document, { preview: true });
+      return;
+    }
+
+    this.requireConnection();
+    const remotePath = normalizeRemotePath(selectedPath);
+    const token = randomBytes(16).toString('hex');
+    CommanderPanel.readonlyDocuments.set(token, { panel: this, path: remotePath });
+    const uri = vscode.Uri.from({
+      scheme: 'bm-ftp-readonly',
+      authority: token,
+      path: `/🔒 ${posix.basename(remotePath)}`
+    });
+    try {
+      const document = await vscode.workspace.openTextDocument(uri);
+      await vscode.window.showTextDocument(document, { preview: true });
+    } catch (error) {
+      CommanderPanel.readonlyDocuments.delete(token);
+      throw error;
+    }
+  }
+
+  private async readRemoteFile(remotePath: string): Promise<string> {
+    this.requireConnection();
+    const stream = new PassThrough();
+    const chunks: Buffer[] = [];
+    stream.on('data', (chunk: Buffer | string) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    await this.client.downloadTo(stream, remotePath);
+    return Buffer.concat(chunks).toString('utf8');
+  }
+
   private reportTransfer(transfer: string): void {
     this.post({ type: 'data', transfer });
     void this.refresh(transfer);
@@ -231,6 +322,8 @@ export class CommanderPanel {
 
   private async sendListings(transfer?: string): Promise<void> {
     const localEntries = await readLocalEntries(this.localPath);
+    this.post({ type: 'data', localPath: this.localPath, localEntries });
+
     let remoteEntries: FileEntry[] = [];
     if (this.connected) {
       try {
@@ -243,8 +336,8 @@ export class CommanderPanel {
     }
 
     this.post({
-      type: 'data', localPath: this.localPath, remotePath: this.remotePath,
-      localEntries, remoteEntries, profile: this.profile, connected: this.connected, transfer
+      type: 'data', remotePath: this.remotePath,
+      remoteEntries, profile: this.profile, connected: this.connected, transfer
     });
   }
 
@@ -305,6 +398,13 @@ function validateProfile(raw: Partial<ConnectionProfile>): ConnectionProfile {
 function normalizeRemotePath(value: string): string {
   if (/[\r\n\0]/.test(value)) throw new Error('FTP path contains an invalid character.');
   return posix.resolve('/', value);
+}
+
+function validateFolderName(value: string): string | undefined {
+  const name = value.trim();
+  if (!name) return 'Enter a folder name.';
+  if (name === '.' || name === '..' || /[\\/\0-\x1f\x7f]/.test(name)) return 'Use a folder name without path separators or control characters.';
+  return undefined;
 }
 
 function getPasswordKey(profile: ConnectionProfile): string {

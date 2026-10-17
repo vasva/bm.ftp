@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit } from '@angular/core';
+import { ChangeDetectorRef, Component, OnDestroy, OnInit } from '@angular/core';
 
 type Pane = 'local' | 'remote';
 type EntryKind = 'file' | 'directory';
@@ -43,12 +43,23 @@ declare function acquireVsCodeApi(): VsCodeApi;
   styleUrl: './app.component.css'
 })
 export class AppComponent implements OnInit, OnDestroy {
+  constructor(private readonly changeDetector: ChangeDetectorRef) {}
+
   private readonly vscode = acquireVsCodeApi();
   private readonly handleMessage = (event: MessageEvent<HostMessage>) => this.receive(event.data);
   private readonly handleKeydown = (event: KeyboardEvent) => {
-    if (event.key === 'F5') {
+    if (event.key === 'F3') {
+      event.preventDefault();
+      this.openSelected(this.activePane);
+    } else if (event.key === 'F5') {
       event.preventDefault();
       this.copySelected();
+    } else if (event.key === 'F7') {
+      event.preventDefault();
+      this.createFolder(this.activePane);
+    } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+      event.preventDefault();
+      document.getElementById(`${this.activePane}-search`)?.focus();
     } else if (event.key === 'Tab' && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLSelectElement) && !(event.target instanceof HTMLButtonElement)) {
       this.activePane = this.activePane === 'local' ? 'remote' : 'local';
       event.preventDefault();
@@ -61,6 +72,10 @@ export class AppComponent implements OnInit, OnDestroy {
   remotePath = '/';
   localEntries: FileEntry[] = [];
   remoteEntries: FileEntry[] = [];
+  localSearch = '';
+  remoteSearch = '';
+  localLoading = true;
+  remoteLoading = false;
   localSelection = '';
   remoteSelection = '';
   activePane: Pane = 'local';
@@ -68,6 +83,14 @@ export class AppComponent implements OnInit, OnDestroy {
   busy = false;
   status = 'Choose an FTP server to connect.';
   error = '';
+
+  get filteredLocalEntries(): FileEntry[] {
+    return this.filterEntries(this.localEntries, this.localSearch);
+  }
+
+  get filteredRemoteEntries(): FileEntry[] {
+    return this.filterEntries(this.remoteEntries, this.remoteSearch);
+  }
 
   ngOnInit(): void {
     window.addEventListener('message', this.handleMessage);
@@ -96,6 +119,7 @@ export class AppComponent implements OnInit, OnDestroy {
   connect(): void {
     this.error = '';
     this.busy = true;
+    this.remoteLoading = true;
     this.status = 'Connecting…';
     this.vscode.postMessage({ type: 'connect', profile: this.profile, password: this.password });
   }
@@ -105,16 +129,20 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   refresh(): void {
+    this.localLoading = true;
+    this.remoteLoading = true;
     this.vscode.postMessage({ type: 'refresh' });
   }
 
   navigate(pane: Pane, path: string): void {
     this.activePane = pane;
+    this.setLoading(pane);
     this.vscode.postMessage({ type: 'navigate', pane, path });
   }
 
   parent(pane: Pane): void {
     this.activePane = pane;
+    this.setLoading(pane);
     this.vscode.postMessage({ type: 'parent', pane });
   }
 
@@ -125,9 +153,29 @@ export class AppComponent implements OnInit, OnDestroy {
     } else {
       this.remoteSelection = entry.path;
     }
-    if (open && entry.kind === 'directory') {
-      this.navigate(pane, entry.path);
+    if (open) {
+      if (entry.kind === 'directory') this.navigate(pane, entry.path);
+      else this.vscode.postMessage({ type: 'open-file', pane, path: entry.path });
     }
+  }
+
+  canOpen(pane: Pane): boolean {
+    const selected = pane === 'local' ? this.localSelection : this.remoteSelection;
+    const entries = pane === 'local' ? this.localEntries : this.remoteEntries;
+    return entries.some((entry) => entry.path === selected && entry.kind === 'file');
+  }
+
+  openSelected(pane: Pane): void {
+    const selected = pane === 'local' ? this.localSelection : this.remoteSelection;
+    if (!this.canOpen(pane)) return;
+    this.activePane = pane;
+    this.vscode.postMessage({ type: 'open-file', pane, path: selected });
+  }
+
+  createFolder(pane: Pane): void {
+    if (pane === 'remote' && !this.connected) return;
+    this.activePane = pane;
+    this.vscode.postMessage({ type: 'create-folder', pane });
   }
 
   copySelected(): void {
@@ -149,8 +197,14 @@ export class AppComponent implements OnInit, OnDestroy {
   private receive(message: HostMessage): void {
     if (message.localPath !== undefined) this.localPath = message.localPath;
     if (message.remotePath !== undefined) this.remotePath = message.remotePath;
-    if (message.localEntries) this.localEntries = message.localEntries;
-    if (message.remoteEntries) this.remoteEntries = message.remoteEntries;
+    if (message.localEntries !== undefined) {
+      this.localEntries = message.localEntries;
+      this.localLoading = false;
+    }
+    if (message.remoteEntries !== undefined) {
+      this.remoteEntries = message.remoteEntries;
+      this.remoteLoading = false;
+    }
     if (message.profile) {
       this.profile = {
         host: message.profile.host ?? this.profile.host,
@@ -162,9 +216,24 @@ export class AppComponent implements OnInit, OnDestroy {
     if (message.connected !== undefined) this.connected = message.connected;
     if (message.error) this.error = message.error;
     else if (message.type === 'data') this.error = '';
+    if (message.error) {
+      this.localLoading = false;
+      this.remoteLoading = false;
+    }
     if (message.transfer) this.status = message.transfer;
     else if (message.error) this.status = 'Connection or file operation failed.';
-    else if (message.type === 'data') this.status = this.connected ? 'Connected. F5 copies the selected file.' : 'Choose an FTP server to connect.';
-    if (message.type === 'data' || message.error || message.transfer) this.busy = false;
+    else if (message.connected !== undefined) this.status = this.connected ? 'Connected. F5 copies the selected file.' : 'Choose an FTP server to connect.';
+    if (message.connected !== undefined || message.error || message.transfer) this.busy = false;
+    this.changeDetector.detectChanges();
+  }
+
+  private filterEntries(entries: FileEntry[], query: string): FileEntry[] {
+    const search = query.trim().toLocaleLowerCase();
+    return search ? entries.filter((entry) => entry.name.toLocaleLowerCase().includes(search)) : entries;
+  }
+
+  private setLoading(pane: Pane): void {
+    if (pane === 'local') this.localLoading = true;
+    else this.remoteLoading = true;
   }
 }

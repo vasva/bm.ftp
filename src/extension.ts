@@ -6,7 +6,13 @@ export function activate(context: vscode.ExtensionContext): void {
     CommanderPanel.createOrShow(context);
   });
 
-  context.subscriptions.push(command);
+  const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
+  statusBarItem.text = '$(folder) FTP Commander';
+  statusBarItem.tooltip = 'Open bm.ftp FTP Commander';
+  statusBarItem.command = 'bmFtp.open';
+  statusBarItem.show();
+
+  context.subscriptions.push(command, statusBarItem, CommanderPanel.registerReadonlyDocuments());
 }
 
 export function deactivate(): void {
