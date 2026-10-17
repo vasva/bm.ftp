@@ -1,0 +1,9 @@
+.vscode/**
+src/**
+webview/src/**
+webview/**
+webview/node_modules/**
+webview/.angular/**
+**/*.ts
+**/*.map
+*.vsix
