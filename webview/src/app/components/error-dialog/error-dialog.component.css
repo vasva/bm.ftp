@@ -1,0 +1,8 @@
+.error-backdrop { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; padding: 18px; background: rgb(0 0 0 / 14%); }
+.error-dialog { width: min(440px, 100%); max-height: min(80vh, 620px); overflow: auto; padding: 24px; border: 1px solid var(--vscode-errorForeground); border-radius: 12px; background: var(--vscode-sideBar-background); color: var(--vscode-foreground); box-shadow: 0 18px 54px #0009; }
+.error-icon { display: block; margin: 0 auto 8px; color: var(--vscode-errorForeground); text-align: center; font-size: 32px; }
+.error-dialog h2 { margin: 0 0 12px; text-align: center; font-size: 17px; }
+.error-dialog p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.error-dialog .error-hint { margin-top: 10px; color: var(--vscode-descriptionForeground); }
+.error-dialog button { display: block; min-width: 82px; min-height: 30px; margin: 20px 0 0 auto; padding: 4px 12px; border: 1px solid var(--vscode-button-background); border-radius: 6px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); font: inherit; cursor: pointer; }
+.error-dialog button:hover { background: var(--vscode-button-hoverBackground); }

@@ -1,9 +1,14 @@
 .vscode/**
+.gitignore
+docs/**
+test/**
 src/**
 webview/src/**
 webview/**
 webview/node_modules/**
 webview/.angular/**
+out/test-webview/**
+tsconfig.extension.json
 **/*.ts
 **/*.map
 *.vsix

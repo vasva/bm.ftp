@@ -1,0 +1,12 @@
+:host { display: block; }
+.pane-heading { display: flex; align-items: center; justify-content: space-between; min-height: 37px; padding: 0 12px; border-bottom: 1px solid var(--vscode-panel-border); color: var(--vscode-descriptionForeground); font: 10px var(--vscode-editor-font-family); letter-spacing: .12em; }
+.pane-actions { display: flex; align-items: center; gap: 4px; }
+button { min-height: 23px; padding: 2px 8px; border: 1px solid var(--vscode-input-border, transparent); border-radius: 4px; color: var(--vscode-descriptionForeground); background: transparent; font: inherit; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--vscode-focusBorder); }
+button:disabled { opacity: .55; cursor: default; }
+button.copy-action { color: #111b29; background: #e5b75d; border-color: #e5b75d; font-weight: 700; }
+button.up-action { display: flex; align-items: center; justify-content: center; gap: 3px; min-width: 56px; padding: 2px 7px; letter-spacing: normal; }
+.material-symbols-outlined { font-size: 16px; line-height: 1; }
+i { display: inline-block; width: 7px; height: 7px; margin-left: 5px; border-radius: 50%; background: var(--vscode-descriptionForeground); }
+i.online { background: #63c174; box-shadow: 0 0 8px #63c17488; }
+i.offline { background: var(--vscode-errorForeground, #f14c4c); }

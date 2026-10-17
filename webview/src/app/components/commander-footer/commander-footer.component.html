@@ -1,0 +1,10 @@
+<footer class="statusbar">
+  <span class="status-message" [class.error]="error">{{ error || status }}</span>
+  <div class="function-actions">
+    <button type="button" class="copy-action" (click)="viewRequested.emit()" [disabled]="!canView">View</button>
+    <button type="button" class="copy-action" (click)="copyRequested.emit()" [disabled]="!canCopy">Copy</button>
+    <button type="button" class="copy-action" (click)="createFolderRequested.emit()" [disabled]="!canCreateFolder">Mkdir</button>
+    <button type="button" class="copy-action delete-action" (click)="deleteRequested.emit()" [disabled]="!canDelete">Delete</button>
+  </div>
+  <span class="key-help">⌘/Ctrl-click: toggle · Shift-click: range · Space: toggle (Insert on Windows)</span>
+</footer>

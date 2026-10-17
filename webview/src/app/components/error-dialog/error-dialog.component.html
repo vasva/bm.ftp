@@ -1,0 +1,9 @@
+<div class="error-backdrop">
+  <section class="error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="error-title" aria-describedby="error-message" tabindex="-1" (keydown)="handleKeydown($event)">
+    <span class="material-symbols-outlined error-icon" aria-hidden="true">error</span>
+    <h2 id="error-title">{{ title }}</h2>
+    <p id="error-message">{{ message }}</p>
+    @if (hint) { <p class="error-hint">{{ hint }}</p> }
+    <button #confirmButton type="button" (click)="dismissed.emit()">OK</button>
+  </section>
+</div>

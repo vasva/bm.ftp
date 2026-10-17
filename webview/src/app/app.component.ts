@@ -1,119 +1,129 @@
-import { ChangeDetectorRef, Component, OnDestroy, OnInit } from '@angular/core';
-
-type Pane = 'local' | 'remote';
-type EntryKind = 'file' | 'directory';
-
-interface FileEntry {
-  name: string;
-  path: string;
-  kind: EntryKind;
-  size: number;
-  modified?: string;
-}
-
-interface ConnectionProfile {
-  host: string;
-  port: number;
-  username: string;
-  protocol: 'ftp' | 'ftps';
-}
+import { ChangeDetectorRef, Component, OnDestroy, OnInit, ViewChild } from '@angular/core';
+import { CommanderFooterComponent } from './components/commander-footer/commander-footer.component';
+import { ConnectionBarComponent } from './components/connection-bar/connection-bar.component';
+import type { ConnectionProfile } from './components/connection-bar/connection-bar.component';
+import { CopyProgressComponent } from './components/copy-progress/copy-progress.component';
+import type { CopyProgress } from './components/copy-progress/copy-progress.component';
+import { ErrorDialogComponent } from './components/error-dialog/error-dialog.component';
+import type { FileEntry, SortColumn, SortState } from './components/file-view/file-view.component';
+import { FilePaneComponent } from './components/file-pane/file-pane.component';
+import { hasVisibleFileSelection } from './selection';
+import { CopyService } from './services/copy.service';
+import { FileListService } from './services/file-list.service';
+import { Pane, SelectionService } from './services/selection.service';
+import { WebviewBridgeService } from './services/webview-bridge.service';
+import { blockBackgroundKeydown } from './modal-keyboard';
 
 interface HostMessage {
   type: string;
+  operation?: string;
   localPath?: string;
   remotePath?: string;
   localEntries?: FileEntry[];
   remoteEntries?: FileEntry[];
   profile?: Partial<ConnectionProfile>;
+  logoUrl?: string;
   connected?: boolean;
   error?: string;
   transfer?: string;
+  progress?: CopyProgress | null;
 }
-
-interface VsCodeApi {
-  postMessage(message: unknown): void;
-}
-
-declare function acquireVsCodeApi(): VsCodeApi;
 
 @Component({
   selector: 'bm-root',
   standalone: true,
+  imports: [CommanderFooterComponent, ConnectionBarComponent, CopyProgressComponent, ErrorDialogComponent, FilePaneComponent],
   templateUrl: './app.component.html',
   styleUrl: './app.component.css'
 })
 export class AppComponent implements OnInit, OnDestroy {
-  constructor(private readonly changeDetector: ChangeDetectorRef) {}
+  constructor(
+    private readonly changeDetector: ChangeDetectorRef,
+    private readonly selection: SelectionService,
+    private readonly copy: CopyService,
+    private readonly fileList: FileListService,
+    private readonly bridge: WebviewBridgeService
+  ) {}
 
-  private readonly vscode = acquireVsCodeApi();
-  private readonly handleMessage = (event: MessageEvent<HostMessage>) => this.receive(event.data);
+  @ViewChild('localPane') private localPane?: FilePaneComponent;
+  @ViewChild('remotePane') private remotePane?: FilePaneComponent;
+  private removeMessageListener?: () => void;
   private readonly handleKeydown = (event: KeyboardEvent) => {
-    if (event.key === 'F3') {
-      event.preventDefault();
-      this.openSelected(this.activePane);
-    } else if (event.key === 'F5') {
-      event.preventDefault();
-      this.copySelected();
-    } else if (event.key === 'F7') {
-      event.preventDefault();
-      this.createFolder(this.activePane);
-    } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
-      event.preventDefault();
-      document.getElementById(`${this.activePane}-search`)?.focus();
-    } else if (event.key === 'Tab' && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLSelectElement) && !(event.target instanceof HTMLButtonElement)) {
+    if (blockBackgroundKeydown(this.modalOpen, event)) return;
+    if (!isEditableTarget(event.target)) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        (this.activePane === 'local' ? this.localPane : this.remotePane)?.focusSearch();
+      }
+    }
+    if (event.key === 'Tab' && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLSelectElement) && !(event.target instanceof HTMLButtonElement)) {
       this.activePane = this.activePane === 'local' ? 'remote' : 'local';
       event.preventDefault();
+      this.changeDetector.detectChanges();
     }
   };
 
   profile: ConnectionProfile = { host: '', port: 21, username: '', protocol: 'ftps' };
+  logoUrl = '';
   password = '';
   localPath = '';
   remotePath = '/';
   localEntries: FileEntry[] = [];
   remoteEntries: FileEntry[] = [];
+  localSort: SortState = { column: 'name', direction: 'ascending' };
+  remoteSort: SortState = { column: 'name', direction: 'ascending' };
   localSearch = '';
   remoteSearch = '';
   localLoading = true;
   remoteLoading = false;
-  localSelection = '';
-  remoteSelection = '';
+  get localSelection(): string[] { return this.selection.get('local'); }
+  get remoteSelection(): string[] { return this.selection.get('remote'); }
   activePane: Pane = 'local';
   connected = false;
   busy = false;
   status = 'Choose an FTP server to connect.';
   error = '';
+  errorTitle = '';
+  errorMessage = '';
+  errorHint = '';
+  copyProgress: CopyProgress | null = null;
+
+  get modalOpen(): boolean {
+    return Boolean(this.errorMessage || this.copyProgress);
+  }
 
   get filteredLocalEntries(): FileEntry[] {
-    return this.filterEntries(this.localEntries, this.localSearch);
+    return this.fileList.filterAndSort(this.localEntries, this.localSearch, this.localSort);
   }
 
   get filteredRemoteEntries(): FileEntry[] {
-    return this.filterEntries(this.remoteEntries, this.remoteSearch);
+    return this.fileList.filterAndSort(this.remoteEntries, this.remoteSearch, this.remoteSort);
+  }
+
+  toggleSort(pane: Pane, column: SortColumn): void {
+    const current = pane === 'local' ? this.localSort : this.remoteSort;
+    const next = this.fileList.toggleSort(current, column);
+    if (pane === 'local') this.localSort = next;
+    else this.remoteSort = next;
   }
 
   ngOnInit(): void {
-    window.addEventListener('message', this.handleMessage);
+    this.removeMessageListener = this.bridge.listen<HostMessage>((message) => this.receive(message));
     window.addEventListener('keydown', this.handleKeydown);
-    this.vscode.postMessage({ type: 'ready' });
+    this.bridge.postMessage({ type: 'ready' });
   }
 
   ngOnDestroy(): void {
-    window.removeEventListener('message', this.handleMessage);
+    this.removeMessageListener?.();
     window.removeEventListener('keydown', this.handleKeydown);
   }
 
-  updateProfile(field: keyof ConnectionProfile, event: Event): void {
-    const value = (event.target as HTMLInputElement).value;
-    if (field === 'port') {
-      this.profile.port = Number(value) || 21;
-    } else if (field === 'protocol') {
-      this.profile.protocol = value === 'ftp' ? 'ftp' : 'ftps';
-    } else if (field === 'host') {
-      this.profile.host = value;
-    } else {
-      this.profile.username = value;
-    }
+  updateProfile(profile: ConnectionProfile): void {
+    this.profile = profile;
+  }
+
+  dismissError(): void {
+    this.errorMessage = '';
   }
 
   connect(): void {
@@ -121,89 +131,123 @@ export class AppComponent implements OnInit, OnDestroy {
     this.busy = true;
     this.remoteLoading = true;
     this.status = 'Connecting…';
-    this.vscode.postMessage({ type: 'connect', profile: this.profile, password: this.password });
+    this.bridge.postMessage({ type: 'connect', profile: this.profile, password: this.password });
   }
 
   disconnect(): void {
-    this.vscode.postMessage({ type: 'disconnect' });
+    this.error = '';
+    this.bridge.postMessage({ type: 'disconnect' });
   }
 
-  refresh(): void {
-    this.localLoading = true;
-    this.remoteLoading = true;
-    this.vscode.postMessage({ type: 'refresh' });
+  refresh(pane: Pane): void {
+    this.error = '';
+    this.setLoading(pane);
+    this.bridge.postMessage({ type: 'refresh', pane });
   }
 
   navigate(pane: Pane, path: string): void {
+    this.error = '';
     this.activePane = pane;
+    this.setSelection(pane, [], '');
     this.setLoading(pane);
-    this.vscode.postMessage({ type: 'navigate', pane, path });
+    this.bridge.postMessage({ type: 'navigate', pane, path });
   }
 
   parent(pane: Pane): void {
+    this.error = '';
     this.activePane = pane;
+    this.setSelection(pane, [], '');
     this.setLoading(pane);
-    this.vscode.postMessage({ type: 'parent', pane });
-  }
-
-  select(pane: Pane, entry: FileEntry, open: boolean): void {
-    this.activePane = pane;
-    if (pane === 'local') {
-      this.localSelection = entry.path;
-    } else {
-      this.remoteSelection = entry.path;
-    }
-    if (open) {
-      if (entry.kind === 'directory') this.navigate(pane, entry.path);
-      else this.vscode.postMessage({ type: 'open-file', pane, path: entry.path });
-    }
+    this.bridge.postMessage({ type: 'parent', pane });
   }
 
   canOpen(pane: Pane): boolean {
-    const selected = pane === 'local' ? this.localSelection : this.remoteSelection;
-    const entries = pane === 'local' ? this.localEntries : this.remoteEntries;
-    return entries.some((entry) => entry.path === selected && entry.kind === 'file');
+    const selection = this.getSelection(pane);
+    if (selection.length !== 1) return false;
+    const selected = selection[0];
+    return this.hasVisibleFileSelection(pane, selected);
+  }
+
+  canCopy(pane: Pane): boolean {
+    return this.copy.canCopy(this.connected, this.busy, this.getSelection(pane), this.filteredEntries(pane).map((entry) => entry.path));
+  }
+
+  canDelete(pane: Pane): boolean {
+    if (this.busy || (pane === 'remote' && !this.connected)) return false;
+    const selectedPaths = this.getSelection(pane);
+    const visiblePaths = new Set(this.filteredEntries(pane).map((entry) => entry.path));
+    return selectedPaths.length > 0 && selectedPaths.every((path) => visiblePaths.has(path));
+  }
+
+  updateSearch(pane: Pane, value: string): void {
+    if (pane === 'local') this.localSearch = value;
+    else this.remoteSearch = value;
+    this.reconcilePaneSelection(pane);
   }
 
   openSelected(pane: Pane): void {
-    const selected = pane === 'local' ? this.localSelection : this.remoteSelection;
+    const selected = this.getSelection(pane)[0];
     if (!this.canOpen(pane)) return;
+    this.error = '';
     this.activePane = pane;
-    this.vscode.postMessage({ type: 'open-file', pane, path: selected });
+    this.bridge.postMessage({ type: 'open-file', pane, path: selected });
   }
 
   createFolder(pane: Pane): void {
     if (pane === 'remote' && !this.connected) return;
+    this.error = '';
     this.activePane = pane;
-    this.vscode.postMessage({ type: 'create-folder', pane });
+    this.bridge.postMessage({ type: 'create-folder', pane });
+  }
+
+  handleFileAction(pane: Pane, entry: FileEntry, open: boolean): void {
+    if (!open) return;
+    this.error = '';
+    this.activePane = pane;
+    if (entry.kind === 'directory') this.navigate(pane, entry.path);
+    else this.bridge.postMessage({ type: 'open-file', pane, path: entry.path });
   }
 
   copySelected(): void {
     const source = this.activePane;
-    const selected = source === 'local' ? this.localSelection : this.remoteSelection;
-    if (!selected || !this.connected || this.busy) return;
+    const selected = [...this.getSelection(source)];
+    const request = this.copy.createRequest(source, selected);
+    if (!request || !this.canCopy(source)) return;
+    this.error = '';
     this.busy = true;
-    this.status = source === 'local' ? 'Uploading…' : 'Downloading…';
-    this.vscode.postMessage({ type: 'copy', source, path: selected });
+    this.status = `Copying ${selected.length} item${selected.length === 1 ? '' : 's'}…`;
+    this.bridge.postMessage(request);
   }
 
-  formatSize(size: number, kind: EntryKind): string {
-    if (kind === 'directory') return '<DIR>';
-    if (size < 1024) return `${size} B`;
-    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  deleteSelected(): void {
+    const pane = this.activePane;
+    if (!this.canDelete(pane)) return;
+    const paths = [...this.getSelection(pane)];
+    this.error = '';
+    this.busy = true;
+    this.status = 'Waiting for delete confirmation…';
+    this.bridge.postMessage({ type: 'delete', pane, paths });
+  }
+
+  copyPath(pane: Pane, path: string, relative: boolean): void {
+    this.error = '';
+    this.bridge.postMessage({ type: 'copy-path', pane, path, relative });
   }
 
   private receive(message: HostMessage): void {
+    if (message.progress !== undefined) this.copyProgress = message.progress;
+    if (message.logoUrl !== undefined) this.logoUrl = message.logoUrl;
     if (message.localPath !== undefined) this.localPath = message.localPath;
     if (message.remotePath !== undefined) this.remotePath = message.remotePath;
     if (message.localEntries !== undefined) {
       this.localEntries = message.localEntries;
       this.localLoading = false;
+      this.reconcilePaneSelection('local');
     }
     if (message.remoteEntries !== undefined) {
       this.remoteEntries = message.remoteEntries;
       this.remoteLoading = false;
+      this.reconcilePaneSelection('remote');
     }
     if (message.profile) {
       this.profile = {
@@ -214,26 +258,83 @@ export class AppComponent implements OnInit, OnDestroy {
       };
     }
     if (message.connected !== undefined) this.connected = message.connected;
-    if (message.error) this.error = message.error;
-    else if (message.type === 'data') this.error = '';
+    if (message.error) {
+      this.error = message.error;
+      this.errorTitle = errorTitleFor(message.operation);
+      this.errorMessage = message.error;
+      this.errorHint = errorHintFor(message.operation);
+      this.copyProgress = null;
+    }
     if (message.error) {
       this.localLoading = false;
       this.remoteLoading = false;
     }
-    if (message.transfer) this.status = message.transfer;
-    else if (message.error) this.status = 'Connection or file operation failed.';
-    else if (message.connected !== undefined) this.status = this.connected ? 'Connected. F5 copies the selected file.' : 'Choose an FTP server to connect.';
+    if (this.error) this.status = 'Connection or file operation failed.';
+    else if (message.transfer) this.status = message.transfer;
+    else if (message.connected !== undefined) this.status = this.connected ? 'Connected.' : 'Choose an FTP server to connect.';
     if (message.connected !== undefined || message.error || message.transfer) this.busy = false;
     this.changeDetector.detectChanges();
   }
 
-  private filterEntries(entries: FileEntry[], query: string): FileEntry[] {
-    const search = query.trim().toLocaleLowerCase();
-    return search ? entries.filter((entry) => entry.name.toLocaleLowerCase().includes(search)) : entries;
+  private filteredEntries(pane: Pane): FileEntry[] {
+    return pane === 'local' ? this.filteredLocalEntries : this.filteredRemoteEntries;
+  }
+
+  private getSelection(pane: Pane): string[] {
+    return this.selection.get(pane);
+  }
+
+  private reconcilePaneSelection(pane: Pane): void {
+    this.selection.reconcile(pane, this.filteredEntries(pane));
+  }
+
+  private hasVisibleFileSelection(pane: Pane, selectedPath: string): boolean {
+    if (!selectedPath) return false;
+    const entries = pane === 'local' ? this.localEntries : this.remoteEntries;
+    const query = pane === 'local' ? this.localSearch : this.remoteSearch;
+    return hasVisibleFileSelection(entries, selectedPath, query);
+  }
+
+  private setSelection(pane: Pane, selected: string[], anchorPath: string): void {
+    this.selection.set(pane, selected, anchorPath);
   }
 
   private setLoading(pane: Pane): void {
     if (pane === 'local') this.localLoading = true;
     else this.remoteLoading = true;
+  }
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select, [contenteditable="true"]') !== null);
+}
+
+function errorTitleFor(operation?: string): string {
+  switch (operation) {
+    case 'connect': return 'FTP connection failed';
+    case 'copy': return 'Copy failed';
+    case 'delete': return 'Delete failed';
+    case 'create-folder': return 'Could not create folder';
+    case 'open-file': return 'Could not open file';
+    case 'copy-path': return 'Could not copy path';
+    case 'navigate':
+    case 'parent': return 'Could not open folder';
+    case 'local-listing': return 'Could not read the local folder';
+    case 'remote-listing': return 'Could not read the FTP folder';
+    case 'refresh': return 'Could not refresh the folder';
+    default: return 'Operation failed';
+  }
+}
+
+function errorHintFor(operation?: string): string {
+  switch (operation) {
+    case 'connect': return 'Check the server address, port, username, password, and FTP/FTPS setting.';
+    case 'navigate':
+    case 'parent':
+    case 'local-listing': return 'Check that the folder exists and that you have permission to access it.';
+    case 'remote-listing':
+    case 'refresh': return 'Check your connection and the folder permissions, then try again.';
+    case 'copy': return 'If this was a multi-item copy, earlier items may already have completed. Check the destination before retrying.';
+    default: return '';
   }
 }

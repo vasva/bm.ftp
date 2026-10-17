@@ -1,0 +1,10 @@
+:host { display: block; }
+button { min-height: 28px; padding: 4px 9px; border: 1px solid var(--vscode-input-border, transparent); border-radius: 4px; color: var(--vscode-input-foreground, var(--vscode-foreground)); background: var(--vscode-input-background, var(--vscode-editor-background)); font: inherit; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--vscode-focusBorder); }
+button:disabled { opacity: .55; cursor: default; }
+.statusbar { display: flex; align-items: center; gap: 12px; min-height: 36px; padding: 4px 12px; border: 1px solid var(--vscode-panel-border); border-radius: 8px; background: var(--vscode-sideBar-background); }
+.status-message { overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); }
+.status-message.error { color: var(--vscode-errorForeground); }
+.function-actions { display: flex; align-items: center; gap: 6px; }
+.copy-action { min-width: 82px; color: #111b29; background: #e5b75d; border-color: #e5b75d; font-weight: 700; }
+.key-help { color: var(--vscode-descriptionForeground); font-size: 10px; }

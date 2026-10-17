@@ -1,0 +1,12 @@
+.transfer-backdrop { position: absolute; z-index: 5; inset: 0; display: grid; place-items: center; padding: 18px; background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent); backdrop-filter: blur(3px); }
+.transfer-dialog { width: min(460px, 100%); padding: 24px; border: 1px solid var(--vscode-focusBorder); border-radius: 12px; background: var(--vscode-sideBar-background); box-shadow: 0 18px 54px #0008; }
+.transfer-icon { display: block; margin: 0 auto 8px; color: #e5b75d; text-align: center; font-size: 30px; }
+.transfer-dialog h2 { margin: 0; text-align: center; font-size: 17px; }
+.transfer-name { overflow: hidden; margin: 7px 0 18px; color: var(--vscode-descriptionForeground); text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.transfer-total { display: flex; justify-content: space-between; margin-bottom: 16px; padding: 10px 12px; border-radius: 7px; background: var(--vscode-editor-background); }
+.transfer-counts { margin: -7px 0 12px; color: var(--vscode-descriptionForeground); text-align: center; font-size: 11px; }
+.transfer-progress-row { margin-top: 13px; }
+.transfer-progress-row label { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; color: var(--vscode-foreground); }
+.transfer-progress-row label span { color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family); font-size: 11px; }
+.transfer-progress-row progress { display: block; width: 100%; height: 9px; accent-color: #e5b75d; }
+.transfer-phase { margin: 18px 0 0; color: var(--vscode-descriptionForeground); text-align: center; }

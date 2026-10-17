@@ -13,35 +13,70 @@
     "url": "https://github.com/vasva/bm.ftp/issues"
   },
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.102.0"
   },
-  "categories": ["Other"],
-  "keywords": ["ftp", "ftps", "commander", "file-manager"],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "ftp",
+    "ftps",
+    "commander",
+    "file-manager"
+  ],
   "main": "./out/extension.js",
-  "activationEvents": ["onCommand:bmFtp.open", "onStartupFinished"],
+  "activationEvents": [
+    "onCommand:bmFtp.open",
+    "onStartupFinished"
+  ],
   "contributes": {
     "commands": [
       {
         "command": "bmFtp.open",
         "title": "bm.ftp: Open FTP Commander"
+      },
+      {
+        "command": "bmFtp.enableAgentAccess",
+        "title": "bm.ftp: Grant read-only access to AI agents"
+      },
+      {
+        "command": "bmFtp.revokeAgentAccess",
+        "title": "bm.ftp: Revoke AI agent access"
+      },
+      {
+        "command": "bmFtp.copyCodexConfiguration",
+        "title": "bm.ftp: Copy Codex MCP configuration"
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "bm.ftp.agents",
+        "label": "bm.ftp"
       }
     ]
   },
   "scripts": {
     "build": "npm run build:webview && npm run compile:extension",
+    "check:mcp": "node --check mcp/server.mjs && node --check mcp/codex-launcher.mjs && node --check mcp/registry.mjs",
     "build:webview": "npm --workspace webview run build",
     "compile:extension": "tsc -p tsconfig.extension.json",
+    "test": "npm run compile:extension && tsc webview/src/app/selection.ts webview/src/app/modal-keyboard.ts webview/src/app/components/path-bar/path-parts.ts --rootDir webview/src/app --target ES2022 --module commonjs --strict --skipLibCheck --outDir out/test-webview && node --test test/*.test.cjs",
     "watch:extension": "tsc -p tsconfig.extension.json --watch",
     "package": "npm run build && vsce package --allow-missing-repository"
   },
   "dependencies": {
-    "basic-ftp": "6.2.3"
+    "@modelcontextprotocol/server": "2.3.1",
+    "basic-ftp": "6.2.3",
+    "zod": "4.6.7"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
     "@types/node": "24.10.0",
-    "@types/vscode": "1.140.0",
+    "@types/vscode": "1.102.0",
     "@vscode/vsce": "4.0.0",
     "typescript": "5.9.3"
   },
-  "workspaces": ["webview"]
+  "workspaces": [
+    "webview"
+  ]
 }

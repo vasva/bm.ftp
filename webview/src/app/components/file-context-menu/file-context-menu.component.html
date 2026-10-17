@@ -1,0 +1,12 @@
+<div class="menu-backdrop" (click)="dismissed.emit()" (contextmenu)="$event.preventDefault()">
+  <div class="context-menu" role="menu" [style.left.px]="x" [style.top.px]="y" (click)="$event.stopPropagation()">
+    <button type="button" role="menuitem" (click)="copyRequested.emit(false)">
+      <span class="material-symbols-outlined" aria-hidden="true">content_copy</span>Copy Path
+    </button>
+    @if (!remote) {
+      <button type="button" role="menuitem" [disabled]="!relativePathEnabled" (click)="copyRequested.emit(true)">
+        <span class="material-symbols-outlined" aria-hidden="true">drive_file_move</span>Copy Relative Path
+      </button>
+    }
+  </div>
+</div>
