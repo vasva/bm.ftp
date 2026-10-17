@@ -2,6 +2,7 @@
   "name": "bm-ftp-commander",
   "displayName": "bm.ftp — FTP Commander",
   "description": "Browse local and FTP/FTPS directories in a Norton Commander-inspired VS Code panel.",
+  "icon": "images/icon.png",
   "version": "0.1.0",
   "publisher": "local",
   "license": "UNLICENSED",
