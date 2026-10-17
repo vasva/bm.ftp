@@ -1,4 +1,5 @@
 .vscode/**
+CONTRIBUTING.md
 .gitignore
 docs/**
 test/**
