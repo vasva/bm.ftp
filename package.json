@@ -4,7 +4,7 @@
   "description": "Browse local and FTP/FTPS directories in a Norton Commander-inspired VS Code panel.",
   "icon": "images/icon.png",
   "version": "0.1.2",
-  "publisher": "local",
+  "publisher": "vasvasnr",
   "license": "MIT",
   "repository": {
     "type": "git",

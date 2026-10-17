@@ -13,4 +13,4 @@ Open this folder in VS Code and press **F5** to launch an Extension Development 
 
 ## Marketplace packaging
 
-The extension's `publisher` value is currently `local`; set it to the Marketplace publisher ID before publishing.
+The extension's `publisher` value is `vasvasnr`; it must match the Marketplace publisher ID when publishing.
