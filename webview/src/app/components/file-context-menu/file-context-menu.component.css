@@ -1,0 +1,6 @@
+.menu-backdrop { position: fixed; z-index: 10; inset: 0; }
+.context-menu { position: fixed; display: grid; min-width: 204px; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border)); border-radius: 7px; background: var(--vscode-menu-background, var(--vscode-sideBar-background)); box-shadow: 0 8px 24px #0008; }
+button { display: flex; align-items: center; gap: 9px; min-height: 30px; padding: 4px 9px; border: 0; border-radius: 4px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: transparent; text-align: left; font: inherit; cursor: pointer; }
+button:hover:not(:disabled) { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-foreground)); }
+button:disabled { opacity: .45; cursor: default; }
+.material-symbols-outlined { color: #e5b75d; font-size: 17px; }

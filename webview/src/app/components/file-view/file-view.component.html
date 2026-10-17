@@ -1,0 +1,26 @@
+<div class="filter">
+  <input #searchInput [id]="pane + '-search'" type="search" [attr.aria-label]="pane === 'local' ? 'Filter local files' : 'Filter FTP files'" placeholder="Filter files and folders…" [value]="search" (input)="searchChanged.emit($any($event.target).value)" />
+  @if (search) {
+    <button type="button" class="clear-search" [attr.aria-label]="pane === 'local' ? 'Clear local file filter' : 'Clear FTP file filter'" title="Clear filter" (click)="$event.stopPropagation(); searchChanged.emit('')"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
+  }
+</div>
+<div class="column-head">
+  <button type="button" class="column-sort" [attr.aria-label]="sortLabel('name', 'Name')" (click)="sortChanged.emit('name')">Name <span class="material-symbols-outlined sort-icon" aria-hidden="true">{{ sortIcon('name') }}</span></button>
+  <button type="button" class="column-sort" [attr.aria-label]="sortLabel('size', 'Size')" (click)="sortChanged.emit('size')">Size <span class="material-symbols-outlined sort-icon" aria-hidden="true">{{ sortIcon('size') }}</span></button>
+  <button type="button" class="column-sort" [attr.aria-label]="sortLabel('modified', 'Modified')" (click)="sortChanged.emit('modified')">Modified <span class="material-symbols-outlined sort-icon" aria-hidden="true">{{ sortIcon('modified') }}</span></button>
+</div>
+<div #fileList class="file-list" (focusin)="paneActivated.emit()" (keydown)="handleListKeydown($event)" (contextmenu)="$event.preventDefault()">
+  @for (entry of entries; track entry.path) {
+    <button type="button" class="file-row" [class.selected]="selectedPaths.includes(entry.path)" (click)="activateEntry(entry, $event, false)" (dblclick)="activateEntry(entry, $event, true)" (keydown)="handleRowKeydown(entry, $event)" (contextmenu)="openContextMenu(entry, $event)">
+      <span class="file-name"><span class="material-symbols-outlined file-icon" aria-hidden="true">{{ entry.kind === 'directory' ? 'folder' : 'description' }}</span>{{ entry.name }}</span>
+      <span class="file-size">{{ formatSize(entry.size, entry.kind) }}</span>
+      <span class="file-date">{{ entry.modified || '' }}</span>
+    </button>
+  } @empty {
+    <p class="empty">{{ noEntriesMessage }}</p>
+  }
+</div>
+@if (contextMenu; as menu) {
+  <bm-file-context-menu [x]="menu.x" [y]="menu.y" [remote]="pane === 'remote'" [relativePathEnabled]="!!menu.entry.relativePath"
+    (copyRequested)="copyContextPath(menu.entry, $event)" (dismissed)="dismissContextMenu()"></bm-file-context-menu>
+}

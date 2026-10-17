@@ -1,0 +1,17 @@
+<header class="toolbar">
+  <div class="brand"><img class="brand-mark" [src]="logoUrl" alt="" /><div><strong>bm.ftp</strong><small>FTP COMMANDER</small></div></div>
+  <form class="connection" (submit)="$event.preventDefault(); connected ? disconnectRequested.emit() : connectRequested.emit()">
+    <input aria-label="FTP server" placeholder="ftp.example.com" [value]="profile.host" (input)="updateProfile('host', $event)" />
+    <input aria-label="Port" class="port" type="number" min="1" max="65535" [value]="profile.port" (input)="updateProfile('port', $event)" />
+    <input aria-label="FTP username" placeholder="Username" [value]="profile.username" (input)="updateProfile('username', $event)" />
+    <input aria-label="FTP password" type="password" placeholder="Password" [value]="password" (input)="passwordChange.emit($any($event.target).value)" />
+    <select aria-label="Connection security" [value]="profile.protocol" (change)="updateProfile('protocol', $event)">
+      <option value="ftps">FTPS</option><option value="ftp">FTP</option>
+    </select>
+    @if (connected) {
+      <button type="button" class="secondary" (click)="disconnectRequested.emit()">Disconnect</button>
+    } @else {
+      <button type="submit" class="connect" [disabled]="busy">Connect</button>
+    }
+  </form>
+</header>

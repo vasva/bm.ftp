@@ -12,7 +12,32 @@ export function activate(context: vscode.ExtensionContext): void {
   statusBarItem.command = 'bmFtp.open';
   statusBarItem.show();
 
-  context.subscriptions.push(command, statusBarItem, CommanderPanel.registerReadonlyDocuments());
+  const enableAgentAccess = vscode.commands.registerCommand('bmFtp.enableAgentAccess', async () => {
+    try {
+      await CommanderPanel.enableAgentAccess();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not enable agent access.';
+      void vscode.window.showErrorMessage(message);
+    }
+  });
+  const revokeAgentAccess = vscode.commands.registerCommand('bmFtp.revokeAgentAccess', () => {
+    CommanderPanel.revokeAgentAccess();
+    void vscode.window.showInformationMessage('Read-only agent access revoked.');
+  });
+  const copyCodexConfiguration = vscode.commands.registerCommand('bmFtp.copyCodexConfiguration', async () => {
+    try {
+      await CommanderPanel.copyCodexConfiguration(context);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not prepare the Codex MCP configuration.';
+      void vscode.window.showErrorMessage(message);
+    }
+  });
+  const agentProvider = vscode.lm.registerMcpServerDefinitionProvider('bm.ftp.agents', {
+    onDidChangeMcpServerDefinitions: CommanderPanel.agentAccessChanged.event,
+    provideMcpServerDefinitions: () => CommanderPanel.getAgentServerDefinition()
+  });
+
+  context.subscriptions.push(command, enableAgentAccess, revokeAgentAccess, copyCodexConfiguration, statusBarItem, agentProvider, CommanderPanel.registerReadonlyDocuments());
 }
 
 export function deactivate(): void {

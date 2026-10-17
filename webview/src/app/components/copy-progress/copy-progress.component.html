@@ -1,0 +1,23 @@
+<div class="transfer-backdrop">
+  <section #dialog class="transfer-dialog" role="dialog" aria-modal="true" aria-labelledby="transfer-title" tabindex="-1" (keydown)="handleKeydown($event)">
+    <span class="material-symbols-outlined transfer-icon" aria-hidden="true">{{ progress.direction === 'upload' ? 'cloud_upload' : 'cloud_download' }}</span>
+    <h2 id="transfer-title">{{ progress.direction === 'upload' ? 'Uploading to FTP' : 'Downloading from FTP' }}</h2>
+    <p class="transfer-name" [title]="progress.name">{{ progress.name }}</p>
+    <div class="transfer-total"><span>Total size</span><strong>{{ formatSize(progress.total) }}</strong></div>
+    <p class="transfer-counts">{{ progress.copiedItems }} / {{ progress.totalItems }} items copied · {{ progress.verifiedItems }} / {{ progress.totalItems }} checked</p>
+
+    <div class="transfer-progress-row">
+      <label for="copied-progress">Copied <span>{{ formatSize(progress.transferred) }} / {{ formatSize(progress.total) }}</span></label>
+      <progress id="copied-progress" [value]="progressPercent(progress.transferred, progress.total)" max="100" aria-label="Copied bytes"></progress>
+    </div>
+    <div class="transfer-progress-row">
+      <label for="verified-progress">Checked <span>{{ formatSize(progress.verified) }} / {{ formatSize(progress.total) }}</span></label>
+      <progress id="verified-progress" [value]="progressPercent(progress.verified, progress.total)" max="100" aria-label="Checked bytes"></progress>
+    </div>
+    <div class="transfer-progress-row">
+      <label for="overall-progress">Overall <span>{{ overallProgressPercent(progress) }}%</span></label>
+      <progress id="overall-progress" [value]="overallProgressPercent(progress)" max="100"></progress>
+    </div>
+    <p class="transfer-phase">{{ progress.phase === 'transfer' ? 'Transferring file…' : 'Checking transferred file size…' }}</p>
+  </section>
+</div>

@@ -1,0 +1,8 @@
+<section class="pane" [class.active]="active" (click)="paneActivated.emit(pane)">
+  <bm-pane-header [pane]="pane" [connected]="connected" (refreshRequested)="refreshRequested.emit(pane)" (parentRequested)="parentRequested.emit(pane)"></bm-pane-header>
+  <bm-path-bar [pane]="pane" [path]="path" [loading]="loading" [connected]="connected" (pathSelected)="pathSelected.emit({ pane, path: $event })"></bm-path-bar>
+  <bm-file-view [pane]="pane" [directoryPath]="path" [entries]="entries" [selectedPaths]="selectedPaths" [search]="search" [sort]="sort" [connected]="connected"
+    (searchChanged)="searchChanged.emit({ pane, value: $event })" (sortChanged)="sortChanged.emit({ pane, column: $event })"
+    (itemActionRequested)="itemActionRequested.emit({ pane, entry: $event.entry, open: $event.open })"
+    (copyPathRequested)="copyPathRequested.emit($event)" (paneActivated)="paneActivated.emit(pane)"></bm-file-view>
+</section>

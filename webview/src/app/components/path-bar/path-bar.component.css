@@ -1,0 +1,16 @@
+:host { display: block; min-width: 0; }
+.path { display: flex; align-items: center; gap: 8px; overflow: hidden; margin: 6px 8px 0; padding: 8px 10px; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); border-radius: 6px; text-overflow: ellipsis; white-space: nowrap; font-family: var(--vscode-editor-font-family); }
+.breadcrumbs { display: flex; align-items: center; min-width: 0; min-height: 28px; overflow: hidden; }
+.path-separator { flex: 0 0 auto; padding: 0 5px; color: var(--vscode-descriptionForeground); }
+.breadcrumb-link, .breadcrumb-current { flex: 0 1 auto; overflow: hidden; max-width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--vscode-foreground); text-overflow: ellipsis; white-space: nowrap; font: inherit; }
+.breadcrumb-link { padding: 2px 6px; border: 1px solid var(--vscode-button-border, var(--vscode-panel-border)); border-radius: 4px; background: var(--vscode-button-secondaryBackground, var(--vscode-editor-background)); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); cursor: pointer; }
+.breadcrumb-link:hover:not(:disabled) { border-color: var(--vscode-button-border, var(--vscode-panel-border)); background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-secondaryBackground, var(--vscode-editor-background))); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); text-decoration: none; }
+.breadcrumb-link.breadcrumb-root { margin-right: 5px; }
+.breadcrumb-current { flex: 1 1 auto; min-width: 0; }
+.breadcrumb-current.breadcrumb-ellipsis { flex: 0 0 auto; padding: 0 3px; }
+.loading-indicator { position: relative; display: inline-grid; flex: 0 0 18px; width: 18px; height: 18px; place-items: center; color: #e5b75d; }
+.loading-symbol { grid-area: 1 / 1; font-size: 18px; line-height: 1; opacity: 0; transform: scale(.84); animation: folder-icon-crossfade 2s ease-in-out infinite; }
+.loading-symbol:nth-child(2) { animation-delay: -.667s; }
+.loading-symbol:nth-child(3) { animation-delay: -1.333s; }
+@keyframes folder-icon-crossfade { 0%, 66% { opacity: 0; transform: scale(.84); } 12%, 54% { opacity: 1; transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .loading-symbol { animation: none; } .loading-symbol:first-child { opacity: 1; } }

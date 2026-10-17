@@ -1,0 +1,4 @@
+:host { display: flex; min-width: 0; min-height: 0; flex-direction: column; }
+.pane { display: flex; flex-direction: column; min-width: 0; overflow: hidden; background: var(--vscode-editor-background); border: 1px solid var(--vscode-panel-border); border-radius: 8px; outline: 1px solid transparent; outline-offset: -1px; }
+.pane { flex: 1; min-height: 0; }
+.pane.active { outline-color: var(--vscode-focusBorder); }
