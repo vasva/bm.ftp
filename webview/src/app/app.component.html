@@ -19,35 +19,65 @@
 
 <main class="commander">
   <section class="pane" [class.active]="activePane === 'local'" (click)="activePane = 'local'">
-    <header class="pane-heading"><span>LOCAL</span><button type="button" (click)="$event.stopPropagation(); parent('local')">↑ Parent</button></header>
-    <div class="path">{{ localPath || 'Loading local folder…' }}</div>
+    <header class="pane-heading"><span>LOCAL</span><div class="pane-actions"><button type="button" class="copy-action up-action" (click)="$event.stopPropagation(); parent('local')"><span class="material-symbols-outlined" aria-hidden="true">arrow_upward</span>Up</button></div></header>
+    <div class="path">
+      @if (localLoading) {
+        <span class="loading-indicator" role="status" aria-label="Loading local folder">
+          <span class="material-symbols-outlined loading-symbol">folder_open</span>
+          <span class="material-symbols-outlined loading-symbol">folder</span>
+          <span class="material-symbols-outlined loading-symbol">folder_copy</span>
+        </span>
+      }
+      <span>{{ localPath || 'Loading local folder…' }}</span>
+    </div>
+    <div class="filter">
+      <input id="local-search" type="search" aria-label="Filter local files" placeholder="Filter files and folders…" [value]="localSearch" (input)="localSearch = $any($event.target).value" />
+      @if (localSearch) {
+        <button type="button" class="clear-search" aria-label="Clear local file filter" title="Clear filter" (click)="$event.stopPropagation(); localSearch = ''"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
+      }
+    </div>
     <div class="column-head"><span>Name</span><span>Size</span><span>Modified</span></div>
     <div class="file-list">
-      @for (entry of localEntries; track entry.path) {
+      @for (entry of filteredLocalEntries; track entry.path) {
         <button type="button" class="file-row" [class.selected]="localSelection === entry.path" (click)="select('local', entry, false)" (dblclick)="select('local', entry, true)" (keydown.enter)="$event.preventDefault(); select('local', entry, true)">
-          <span class="file-name"><span class="file-icon">{{ entry.kind === 'directory' ? '▸' : '·' }}</span>{{ entry.name }}</span>
+          <span class="file-name"><span class="material-symbols-outlined file-icon" aria-hidden="true">{{ entry.kind === 'directory' ? 'folder' : 'description' }}</span>{{ entry.name }}</span>
           <span class="file-size">{{ formatSize(entry.size, entry.kind) }}</span>
           <span class="file-date">{{ entry.modified || '' }}</span>
         </button>
       } @empty {
-        <p class="empty">No files in this folder.</p>
+        <p class="empty">{{ localSearch ? 'No matching files or folders.' : 'No files in this folder.' }}</p>
       }
     </div>
   </section>
 
   <section class="pane" [class.active]="activePane === 'remote'" (click)="activePane = 'remote'">
-    <header class="pane-heading"><span>FTP SERVER <i [class.online]="connected"></i></span><button type="button" (click)="$event.stopPropagation(); parent('remote')" [disabled]="!connected">↑ Parent</button></header>
-    <div class="path">{{ connected ? remotePath : 'Not connected' }}</div>
+    <header class="pane-heading"><span>FTP SERVER <i [class.online]="connected"></i></span><div class="pane-actions"><button type="button" class="copy-action up-action" (click)="$event.stopPropagation(); parent('remote')" [disabled]="!connected"><span class="material-symbols-outlined" aria-hidden="true">arrow_upward</span>Up</button></div></header>
+    <div class="path">
+      @if (remoteLoading) {
+        <span class="loading-indicator" role="status" aria-label="Loading FTP folder">
+          <span class="material-symbols-outlined loading-symbol">folder_open</span>
+          <span class="material-symbols-outlined loading-symbol">folder</span>
+          <span class="material-symbols-outlined loading-symbol">folder_copy</span>
+        </span>
+      }
+      <span>{{ connected ? remotePath : 'Not connected' }}</span>
+    </div>
+    <div class="filter">
+      <input id="remote-search" type="search" aria-label="Filter FTP files" placeholder="Filter files and folders…" [value]="remoteSearch" (input)="remoteSearch = $any($event.target).value" />
+      @if (remoteSearch) {
+        <button type="button" class="clear-search" aria-label="Clear FTP file filter" title="Clear filter" (click)="$event.stopPropagation(); remoteSearch = ''"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
+      }
+    </div>
     <div class="column-head"><span>Name</span><span>Size</span><span>Modified</span></div>
     <div class="file-list">
-      @for (entry of remoteEntries; track entry.path) {
+      @for (entry of filteredRemoteEntries; track entry.path) {
         <button type="button" class="file-row" [class.selected]="remoteSelection === entry.path" (click)="select('remote', entry, false)" (dblclick)="select('remote', entry, true)" (keydown.enter)="$event.preventDefault(); select('remote', entry, true)">
-          <span class="file-name"><span class="file-icon">{{ entry.kind === 'directory' ? '▸' : '·' }}</span>{{ entry.name }}</span>
+          <span class="file-name"><span class="material-symbols-outlined file-icon" aria-hidden="true">{{ entry.kind === 'directory' ? 'folder' : 'description' }}</span>{{ entry.name }}</span>
           <span class="file-size">{{ formatSize(entry.size, entry.kind) }}</span>
           <span class="file-date">{{ entry.modified || '' }}</span>
         </button>
       } @empty {
-        <p class="empty">Connect to view the remote directory.</p>
+        <p class="empty">{{ remoteSearch && connected ? 'No matching files or folders.' : connected ? 'No files in this folder.' : 'Connect to view the remote directory.' }}</p>
       }
     </div>
   </section>
@@ -55,6 +85,10 @@
 
 <footer class="statusbar">
   <span class="status-message" [class.error]="error">{{ error || status }}</span>
-  <button type="button" class="copy-action" (click)="copySelected()" [disabled]="!connected || busy">F5&nbsp; Copy</button>
-  <span class="key-help">Tab Switch pane&nbsp; · &nbsp;Enter Open folder</span>
+  <div class="function-actions">
+    <button type="button" class="copy-action" (click)="openSelected(activePane)" [disabled]="!canOpen(activePane)">F3&nbsp; View</button>
+    <button type="button" class="copy-action" (click)="copySelected()" [disabled]="!connected || busy">F5&nbsp; Copy</button>
+    <button type="button" class="copy-action" (click)="createFolder(activePane)" [disabled]="activePane === 'remote' && !connected">F7&nbsp; Mkdir</button>
+  </div>
+  <span class="key-help">Tab Switch pane&nbsp; · &nbsp;Enter Open</span>
 </footer>
