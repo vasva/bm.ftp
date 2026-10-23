@@ -2,6 +2,7 @@
 CONTRIBUTING.md
 .gitignore
 docs/**
+doc/**
 test/**
 src/**
 webview/src/**

@@ -1,0 +1,11 @@
+<div class="confirm-backdrop">
+  <section class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message" tabindex="-1" (keydown)="handleKeydown($event)">
+    <span class="material-symbols-outlined confirm-icon" aria-hidden="true">warning</span>
+    <h2 id="confirm-title">{{ title }}</h2>
+    <p id="confirm-message">{{ message }}</p>
+    <div class="confirm-actions">
+      <button #cancelButton type="button" class="cancel" (click)="cancelled.emit()">{{ cancelLabel }}</button>
+      <button #confirmButton type="button" class="confirm" (click)="confirmed.emit()">{{ confirmLabel }}</button>
+    </div>
+  </section>
+</div>

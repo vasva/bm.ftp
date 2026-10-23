@@ -2,6 +2,7 @@ node_modules/
 out/
 dist/
 media/webview/
+test-results/
 **/.angular/
 *.vsix
 .DS_Store

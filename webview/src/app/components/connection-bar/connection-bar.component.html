@@ -1,13 +1,53 @@
 <header class="toolbar">
-  <div class="brand"><img class="brand-mark" [src]="logoUrl" alt="" /><div><strong>bm.ftp</strong><small>FTP COMMANDER</small></div></div>
+  <div class="brand"><img class="brand-mark" [src]="logoUrl" alt="" /><div><strong>bm.ftp</strong><small>FILE COMMANDER</small></div><span class="brand-beta">BETA</span></div>
+  @if (savedProfiles.length) {
+    <div class="saved-connections" (click)="$event.stopPropagation()">
+      <button type="button" class="saved-trigger" aria-label="Saved connections" aria-haspopup="true"
+        [attr.aria-expanded]="savedMenuOpen" (click)="toggleSavedMenu()" [disabled]="busy || connected">
+        <span class="material-symbols-outlined saved-icon" aria-hidden="true">dns</span>
+        <span class="saved-trigger-label">{{ selectedSavedLabel }}</span>
+        <span class="material-symbols-outlined saved-chevron" aria-hidden="true">expand_more</span>
+      </button>
+      @if (savedMenuOpen) {
+        <section class="saved-menu" aria-label="Saved connections list">
+          <h2>Saved connections</h2>
+          @for (saved of savedProfiles; track $index) {
+            <div class="saved-item" [class.selected]="$index.toString() === selectedSavedIndex">
+              <button type="button" class="saved-choice" [attr.aria-label]="'Select saved connection ' + savedLabel(saved)"
+                (click)="selectSaved(saved)">{{ savedLabel(saved) }}</button>
+              <button type="button" class="forget" [attr.aria-label]="'Forget saved connection ' + savedLabel(saved)"
+                [title]="'Forget ' + savedLabel(saved)" [disabled]="busy" (click)="forgetSaved(saved)">
+                <span class="material-symbols-outlined" aria-hidden="true">delete</span>
+              </button>
+            </div>
+          }
+        </section>
+      }
+    </div>
+  }
   <form class="connection" (submit)="$event.preventDefault(); connected ? disconnectRequested.emit() : connectRequested.emit()">
-    <input aria-label="FTP server" placeholder="ftp.example.com" [value]="profile.host" (input)="updateProfile('host', $event)" />
-    <input aria-label="Port" class="port" type="number" min="1" max="65535" [value]="profile.port" (input)="updateProfile('port', $event)" />
-    <input aria-label="FTP username" placeholder="Username" [value]="profile.username" (input)="updateProfile('username', $event)" />
-    <input aria-label="FTP password" type="password" placeholder="Password" [value]="password" (input)="passwordChange.emit($any($event.target).value)" />
-    <select aria-label="Connection security" [value]="profile.protocol" (change)="updateProfile('protocol', $event)">
-      <option value="ftps">FTPS</option><option value="ftp">FTP</option>
-    </select>
+    <input aria-label="Server" placeholder="files.example.com" [value]="profile.host" (input)="updateProfile('host', $event)" [disabled]="connected" />
+    <input aria-label="Port" class="port" type="number" min="1" max="65535" [value]="profile.port" (input)="updateProfile('port', $event)" [disabled]="connected" />
+    <input aria-label="Username" placeholder="Username" [value]="profile.username" (input)="updateProfile('username', $event)" [disabled]="connected" />
+    <input aria-label="Password" type="password" placeholder="Password" [value]="password" (input)="passwordChange.emit($any($event.target).value)" [disabled]="connected" />
+    <div class="protocol-picker" (click)="$event.stopPropagation()">
+      <button type="button" class="protocol-trigger" aria-label="Connection protocol" aria-haspopup="true"
+        [attr.aria-expanded]="protocolMenuOpen && !connected" (click)="toggleProtocolMenu()" [disabled]="connected">
+        <span>{{ profile.protocol === 'sftp' ? 'SFTP (SSH)' : profile.protocol.toUpperCase() }}</span>
+        <span class="material-symbols-outlined saved-chevron" aria-hidden="true">expand_more</span>
+      </button>
+      @if (protocolMenuOpen && !connected) {
+        <section class="protocol-menu" aria-label="Connection protocol choices">
+          <h2>Connection protocol</h2>
+          <button type="button" class="protocol-choice" [class.selected]="profile.protocol === 'ftps'"
+            [attr.aria-pressed]="profile.protocol === 'ftps'" (click)="selectProtocol('ftps')">FTPS</button>
+          <button type="button" class="protocol-choice" [class.selected]="profile.protocol === 'ftp'"
+            [attr.aria-pressed]="profile.protocol === 'ftp'" (click)="selectProtocol('ftp')">FTP</button>
+          <button type="button" class="protocol-choice" [class.selected]="profile.protocol === 'sftp'"
+            [attr.aria-pressed]="profile.protocol === 'sftp'" (click)="selectProtocol('sftp')">SFTP (SSH)</button>
+        </section>
+      }
+    </div>
     @if (connected) {
       <button type="button" class="secondary" (click)="disconnectRequested.emit()">Disconnect</button>
     } @else {

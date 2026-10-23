@@ -6,11 +6,14 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as posix from 'node:path/posix';
 import { PassThrough } from 'node:stream';
-import { Client, FileInfo } from 'basic-ftp';
+import type { RemoteEntry, RemoteTransport } from './remoteTransport';
+import { FtpTransport } from './ftpTransport';
+import { SftpTransport } from './sftpTransport';
 import { AgentBridge, AgentRequest } from './agentBridge';
 import { ensurePrivateDirectory, getCodexRuntimePaths, installCodexLauncher, installCodexServerEntry, isCodexConfigured, publishCodexGrant, removeCodexGrant } from './codexAgentAccess';
 import { isSafeRemoteName, isSensitiveAgentFilename, resolveGrantedRemotePath, toGrantedRemotePath } from './mcpPolicy';
 import { ConnectionProfile, FileEntry, OperationQueue, downloadAtomically, getPasswordKey, normalizeRemotePath, readLocalEntries, replaceRemoteFile, sortEntries, validateFolderName, validateProfile } from './core';
+import { LAST_PROFILE_KEY, SAVED_PROFILES_KEY, addSavedProfile, profileIdentity, readSavedProfiles, removeSavedProfile } from './savedConnections';
 
 type Pane = 'local' | 'remote';
 
@@ -45,8 +48,6 @@ interface CopyItem {
   size: number;
 }
 
-const PROFILE_KEY = 'bm.ftp.profile';
-
 export class CommanderPanel {
   private static current: CommanderPanel | undefined;
   private static readonlyDocuments = new Map<string, { panel: CommanderPanel; path: string; content?: string }>();
@@ -54,8 +55,8 @@ export class CommanderPanel {
 
   static registerReadonlyDocuments(): vscode.Disposable {
     const readonlyStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 10);
-    readonlyStatus.text = '$(lock) FTP · Read-only';
-    readonlyStatus.tooltip = 'This is a read-only copy opened from an FTP server. Changes cannot be saved to the server.';
+    readonlyStatus.text = '$(lock) Remote · Read-only';
+    readonlyStatus.tooltip = 'This is a read-only copy opened from a remote server. Changes cannot be saved to the server.';
     const updateReadonlyStatus = (editor: vscode.TextEditor | undefined): void => {
       if (editor?.document.uri.scheme === 'bm-ftp-readonly') readonlyStatus.show();
       else readonlyStatus.hide();
@@ -65,7 +66,7 @@ export class CommanderPanel {
     const provider = vscode.workspace.registerTextDocumentContentProvider('bm-ftp-readonly', {
       provideTextDocumentContent: async (uri) => {
         const document = CommanderPanel.readonlyDocuments.get(uri.authority);
-        if (!document) throw new Error('The FTP document is no longer available.');
+        if (!document) throw new Error('The remote document is no longer available.');
         if (document.content === undefined) document.content = await document.panel.readRemoteFile(document.path);
         return document.content;
       }
@@ -99,14 +100,14 @@ export class CommanderPanel {
 
   static async enableAgentAccess(): Promise<void> {
     const panel = CommanderPanel.current;
-    if (!panel?.connected) throw new Error('Connect to an FTP server in bm.ftp first.');
+    if (!panel?.connected) throw new Error('Connect to a server in bm.ftp first.');
     const sessionId = panel.agentSessionId;
     const root = await vscode.window.showInputBox({
-      title: 'Grant FTP access to agents',
-      prompt: 'Remote directory root available to the agent. Use / for the account root.',
+      title: 'Grant remote access to agents',
+      prompt: 'Remote directory root available to the agent. Use / for the server root.',
       value: panel.remotePath || '/',
       validateInput: (value) => {
-        if (!value.startsWith('/') || /[\\\0\r\n\x01-\x1f\x7f]/.test(value)) return 'Enter an absolute FTP directory path beginning with / and without control characters or backslashes.';
+        if (!value.startsWith('/') || /[\\\0\r\n\x01-\x1f\x7f]/.test(value)) return 'Enter an absolute remote directory path beginning with / and without control characters or backslashes.';
         return undefined;
       }
     });
@@ -114,7 +115,7 @@ export class CommanderPanel {
     if (!panel.isGrantSessionCurrent(sessionId)) throw new Error('The FTP session changed while access was being granted. Try again.');
     const normalizedRoot = normalizeRemotePath(root);
     const confirmed = await vscode.window.showWarningMessage(
-      `Allow the connected agent to list folders, search names, and read text files under FTP root '${normalizedRoot}'? File contents may be sent to the selected AI model. Access ends when you disconnect or close bm.ftp.`,
+      `Allow the connected agent to list folders, search names, and read text files under remote root '${normalizedRoot}'? File contents may be sent to the selected AI model. Access ends when you disconnect or close bm.ftp.`,
       { modal: true }, 'Grant read-only access'
     );
     if (confirmed !== 'Grant read-only access') return;
@@ -143,13 +144,15 @@ export class CommanderPanel {
     void vscode.window.showInformationMessage('One-time Codex MCP configuration copied. Add it to Codex config.toml and reload Codex MCP servers. Future FTP sessions can be granted from bm.ftp without restarting Codex.');
   }
 
-  private readonly client = new Client(30_000);
+  private client: RemoteTransport = new FtpTransport('ftps');
   private localPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir();
   private remotePath = '/';
   private connected = false;
   private disposed = false;
   private copyProgress: CopyProgress | undefined;
   private profile: ConnectionProfile | undefined;
+  private savedProfiles: ConnectionProfile[] = [];
+  private profilesLoaded = false;
   private readonly operationQueue = new OperationQueue();
   private agentBridge: AgentBridge | undefined;
   private agentRoot = '/';
@@ -228,6 +231,9 @@ export class CommanderPanel {
           this.connected = false;
           await this.refresh();
           break;
+        case 'forget-connection':
+          await this.forgetConnection(message.profile);
+          break;
         case 'refresh':
           if (message.pane) await this.refreshPane(message.pane);
           else await this.refresh();
@@ -257,17 +263,31 @@ export class CommanderPanel {
     } catch (error) {
       if (this.disposed) return;
       this.post({ type: 'error', operation: message.type, error: errorMessage(error) });
-      await this.sendListings().catch(() => undefined);
+      await this.sendListings(undefined, message.type !== 'connect').catch(() => undefined);
     }
   }
 
   private async sendInitialState(): Promise<void> {
-    const profile = this.context.globalState.get<ConnectionProfile>(PROFILE_KEY);
-    this.profile = profile;
+    await this.loadSavedProfiles();
+    const last = readSavedProfiles([this.context.globalState.get<ConnectionProfile>(LAST_PROFILE_KEY)])[0];
+    const profile = this.savedProfiles.find((saved) => last && profileIdentity(saved) === profileIdentity(last)) ?? this.savedProfiles.at(-1);
+    if (!this.connected) this.profile = profile;
     const logoUri = vscode.Uri.joinPath(this.context.extensionUri, 'media', 'webview', 'browser', 'assets', 'westbohemia-logo-animated-transparent-128.png');
     const logoUrl = this.panel.webview.asWebviewUri(logoUri).toString();
-    this.post({ type: 'data', localPath: this.localPath, remotePath: this.remotePath, profile, connected: this.connected, logoUrl });
+    this.post({ type: 'data', localPath: this.localPath, remotePath: this.remotePath, profile, savedProfiles: this.savedProfiles, connected: this.connected, logoUrl });
     await this.refresh();
+  }
+
+  private async loadSavedProfiles(): Promise<void> {
+    if (this.profilesLoaded) return;
+    const stored = this.context.globalState.get<unknown>(SAVED_PROFILES_KEY);
+    if (stored !== undefined) {
+      this.savedProfiles = readSavedProfiles(stored);
+    } else {
+      this.savedProfiles = readSavedProfiles([this.context.globalState.get<unknown>(LAST_PROFILE_KEY)]);
+      if (this.savedProfiles.length) await this.context.globalState.update(SAVED_PROFILES_KEY, this.savedProfiles);
+    }
+    this.profilesLoaded = true;
   }
 
   private async connect(rawProfile: Partial<ConnectionProfile>, suppliedPassword: string): Promise<void> {
@@ -275,32 +295,68 @@ export class CommanderPanel {
     const passwordKey = getPasswordKey(profile);
     const password = suppliedPassword || await this.context.secrets.get(passwordKey) || '';
     if (this.disposed) return;
-    if (!password) throw new Error('Enter the FTP password.');
+    if (!password) throw new Error('Enter the server password.');
 
     this.stopConnectionMonitor();
     this.revokeAgentAccess();
     this.client.close();
     this.connected = false;
-    await this.client.access({
-      host: profile.host,
-      port: profile.port,
-      user: profile.username,
-      password,
-      secure: profile.protocol === 'ftps'
-    });
+    if (profile.protocol === 'sftp') {
+      let transport: SftpTransport;
+      transport = new SftpTransport(this.context.secrets, (message, changed) => this.confirmSftpHostKey(message, changed), () => {
+        if (this.client === transport) this.markConnectionLost();
+      });
+      this.client = transport;
+    } else if (!(this.client instanceof FtpTransport)) {
+      this.client = new FtpTransport(profile.protocol);
+    }
+    this.remotePath = await this.client.connect(profile, password);
     if (this.disposed) {
       this.client.close();
       return;
     }
 
+    await this.loadSavedProfiles();
+    const savedProfiles = addSavedProfile(this.savedProfiles, profile);
+    if (savedProfiles !== this.savedProfiles) {
+      await this.context.globalState.update(SAVED_PROFILES_KEY, savedProfiles);
+      this.savedProfiles = savedProfiles;
+    }
     this.profile = profile;
     this.connected = true;
     this.agentSessionId = randomBytes(16).toString('hex');
     this.startConnectionMonitor();
-    await this.context.globalState.update(PROFILE_KEY, profile);
+    await this.context.globalState.update(LAST_PROFILE_KEY, profile);
     await this.context.secrets.store(passwordKey, password);
-    this.remotePath = '/';
+    this.post({ type: 'data', savedProfiles: this.savedProfiles });
     await this.refresh('Connected.');
+  }
+
+  private async forgetConnection(rawProfile: Partial<ConnectionProfile> | undefined): Promise<void> {
+    await this.loadSavedProfiles();
+    const requested = validateProfile(rawProfile ?? {});
+    const identity = profileIdentity(requested);
+    const saved = this.savedProfiles.find((profile) => profileIdentity(profile) === identity);
+    if (!saved) throw new Error('This saved connection no longer exists.');
+    if (this.disposed) return;
+    const latest = readSavedProfiles(this.context.globalState.get<unknown>(SAVED_PROFILES_KEY));
+    if (!latest.some((profile) => profileIdentity(profile) === identity)) throw new Error('This saved connection changed while confirmation was open.');
+    const remaining = removeSavedProfile(latest, saved);
+    await this.context.secrets.delete(getPasswordKey(saved));
+    await this.context.globalState.update(SAVED_PROFILES_KEY, remaining);
+    this.savedProfiles = remaining;
+    const last = readSavedProfiles([this.context.globalState.get<unknown>(LAST_PROFILE_KEY)])[0];
+    if (last && profileIdentity(last) === identity) await this.context.globalState.update(LAST_PROFILE_KEY, remaining.at(-1));
+    this.post({ type: 'data', savedProfiles: remaining });
+  }
+
+  private async confirmSftpHostKey(message: string, changed: boolean): Promise<'trust' | 'replace' | undefined> {
+    const action = changed ? 'Replace trusted key and connect' : 'Trust key and connect';
+    const result = changed
+      ? await vscode.window.showWarningMessage(`${message}\n\nVerify the new key before replacing the saved trust record.`, { modal: true }, 'Cancel', action)
+      : await vscode.window.showWarningMessage(message, { modal: true }, action);
+    if (result === action) return changed ? 'replace' : 'trust';
+    return undefined;
   }
 
   private async navigate(pane: Pane | undefined, requestedPath: string | undefined): Promise<void> {
@@ -352,7 +408,7 @@ export class CommanderPanel {
       const names = conflicts.slice(0, 8);
       if (conflicts.length > names.length) names.push(`… and ${conflicts.length - names.length} more`);
       const confirmed = await vscode.window.showWarningMessage(
-        `Replace ${conflicts.length} existing file${conflicts.length === 1 ? '' : 's'} in the ${source === 'local' ? 'FTP' : 'local'} folder?\n\n${names.join('\n')}\n\nExisting folders will be merged.`,
+        `Replace ${conflicts.length} existing file${conflicts.length === 1 ? '' : 's'} in the ${source === 'local' ? 'remote' : 'local'} folder?\n\n${names.join('\n')}\n\nExisting folders will be merged.`,
         { modal: true },
         'Replace'
       );
@@ -376,8 +432,7 @@ export class CommanderPanel {
       this.updateCopyProgress({ name: item.relativePath, phase: 'transfer' });
       if (source === 'local') {
         const target = posix.join(this.remotePath, ...item.relativePath.split('/'));
-        await this.client.ensureDir(target);
-        await this.client.cd(this.remotePath);
+        await this.client.ensureDir(target, this.remotePath);
       } else {
         const target = path.resolve(this.localPath, ...item.relativePath.split('/'));
         await fs.mkdir(target, { recursive: true });
@@ -421,7 +476,8 @@ export class CommanderPanel {
       });
     }
 
-    await this.reportTransfer(`Copied ${items.length} item${items.length === 1 ? '' : 's'} ${source === 'local' ? 'to FTP' : 'to the local folder'}.`);
+    const remoteLabel = this.profile?.protocol === 'sftp' ? 'to the SFTP server' : 'to FTP';
+    await this.reportTransfer(`Copied ${items.length} item${items.length === 1 ? '' : 's'} ${source === 'local' ? remoteLabel : 'to the local folder'}.`);
   }
 
   private beginCopyProgress(direction: CopyProgress['direction'], name: string, total: number, totalItems: number): void {
@@ -483,9 +539,9 @@ export class CommanderPanel {
     const selected = [...new Set(requestedPaths.map((selectedPath) => normalizeRemotePath(selectedPath)))];
     const roots = await this.client.list(directory);
     const items: CopyItem[] = [];
-    const visit = async (sourcePath: string, relativePath: string, entry: FileInfo): Promise<void> => {
+    const visit = async (sourcePath: string, relativePath: string, entry: RemoteEntry): Promise<void> => {
       validateCopyName(entry.name);
-      if (entry.isSymbolicLink) throw new Error(`Cannot recursively copy FTP symbolic link '${relativePath}'.`);
+      if (entry.isSymbolicLink) throw new Error(`Cannot recursively copy remote symbolic link '${relativePath}'.`);
       if (entry.isDirectory) {
         items.push({ sourcePath, relativePath, kind: 'directory', size: 0 });
         for (const child of await this.client.list(sourcePath)) {
@@ -494,17 +550,17 @@ export class CommanderPanel {
         }
       } else if (entry.isFile) {
         const size = Number.isFinite(entry.size) && entry.size >= 0 ? entry.size : await this.client.size(sourcePath);
-        if (!Number.isFinite(size) || size < 0) throw new Error(`Could not determine the size of FTP file '${relativePath}'.`);
+        if (!Number.isFinite(size) || size < 0) throw new Error(`Could not determine the size of remote file '${relativePath}'.`);
         items.push({ sourcePath, relativePath, kind: 'file', size });
       } else {
-        throw new Error(`Cannot copy unsupported FTP item '${relativePath}'.`);
+        throw new Error(`Cannot copy unsupported remote item '${relativePath}'.`);
       }
     };
 
     for (const selectedPath of selected) {
-      if (posix.dirname(selectedPath) !== directory) throw new Error('Select items from the current FTP folder.');
+      if (posix.dirname(selectedPath) !== directory) throw new Error('Select items from the current remote folder.');
       const entry = roots.find((candidate) => candidate.name === posix.basename(selectedPath));
-      if (!entry) throw new Error(`FTP item '${posix.basename(selectedPath)}' no longer exists.`);
+      if (!entry) throw new Error(`Remote item '${posix.basename(selectedPath)}' no longer exists.`);
       await visit(selectedPath, entry.name, entry);
     }
     return items;
@@ -534,7 +590,7 @@ export class CommanderPanel {
     }
 
     const root = normalizeRemotePath(this.remotePath);
-    const cache = new Map<string, FileInfo[]>();
+    const cache = new Map<string, RemoteEntry[]>();
     cache.set(root, await this.client.list(root));
     const directories = items.filter((item) => item.kind === 'directory').sort((a, b) => a.relativePath.split('/').length - b.relativePath.split('/').length);
     for (const item of directories) {
@@ -542,8 +598,8 @@ export class CommanderPanel {
       const parent = posix.dirname(target);
       const entry = cache.get(parent)?.find((candidate) => candidate.name === posix.basename(target));
       if (entry) {
-        if (entry.isSymbolicLink) throw new Error(`The FTP destination '${item.relativePath}' is a symbolic link.`);
-        if (!entry.isDirectory) throw new Error(`The FTP destination '${item.relativePath}' is a file, not a folder.`);
+        if (entry.isSymbolicLink) throw new Error(`The remote destination '${item.relativePath}' is a symbolic link.`);
+        if (!entry.isDirectory) throw new Error(`The remote destination '${item.relativePath}' is a file, not a folder.`);
         cache.set(target, await this.client.list(target));
       } else {
         cache.set(target, []);
@@ -555,8 +611,8 @@ export class CommanderPanel {
       const target = posix.join(root, ...item.relativePath.split('/'));
       const entry = cache.get(posix.dirname(target))?.find((candidate) => candidate.name === posix.basename(target));
       if (!entry) continue;
-      if (entry.isSymbolicLink) throw new Error(`The FTP destination '${item.relativePath}' is a symbolic link.`);
-      if (!entry.isFile) throw new Error(`The FTP destination '${item.relativePath}' is a folder, not a file.`);
+      if (entry.isSymbolicLink) throw new Error(`The remote destination '${item.relativePath}' is a symbolic link.`);
+      if (!entry.isFile) throw new Error(`The remote destination '${item.relativePath}' is a folder, not a file.`);
       conflicts.push(item.relativePath);
     }
     return conflicts;
@@ -577,8 +633,7 @@ export class CommanderPanel {
       await fs.mkdir(path.join(this.localPath, folderName));
     } else {
       const target = posix.join(this.remotePath, folderName);
-      await this.client.ensureDir(target);
-      await this.client.cd(this.remotePath);
+      await this.client.ensureDir(target, this.remotePath);
     }
     await this.reportTransfer(`Created folder ${folderName}.`);
   }
@@ -685,7 +740,7 @@ export class CommanderPanel {
 
     this.requireConnection();
     const remotePath = normalizeRemotePath(selectedPath);
-    if (posix.dirname(remotePath) !== normalizeRemotePath(this.remotePath)) throw new Error('Select a file in the current FTP folder.');
+    if (posix.dirname(remotePath) !== normalizeRemotePath(this.remotePath)) throw new Error('Select a file in the current remote folder.');
     const remoteEntry = (await this.client.list(this.remotePath)).find((entry) => posix.join(this.remotePath, entry.name) === remotePath);
     if (!remoteEntry?.isFile) throw new Error('Select a remote file to open.');
     if (this.disposed) return;
@@ -727,9 +782,9 @@ export class CommanderPanel {
       if (relative) throw new Error('Relative paths are available only for local items inside an open VS Code workspace folder.');
       this.requireConnection();
       const target = normalizeRemotePath(selectedPath);
-      if (posix.dirname(target) !== normalizeRemotePath(this.remotePath)) throw new Error('The selected FTP item is no longer in the open folder. Refresh and try again.');
+      if (posix.dirname(target) !== normalizeRemotePath(this.remotePath)) throw new Error('The selected remote item is no longer in the open folder. Refresh and try again.');
       const entry = (await this.client.list(this.remotePath)).find((candidate) => posix.join(this.remotePath, candidate.name) === target);
-      if (!entry || !this.profile) throw new Error('The selected FTP item no longer exists. Refresh and try again.');
+      if (!entry || !this.profile) throw new Error('The selected remote item no longer exists. Refresh and try again.');
 
       const host = this.profile.host.includes(':') && !this.profile.host.startsWith('[')
         ? `[${this.profile.host}]`
@@ -754,7 +809,7 @@ export class CommanderPanel {
     try {
       await this.client.downloadTo(stream, remotePath);
     } catch (error) {
-      this.post({ type: 'error', operation: 'open-file', error: `Could not read FTP file '${posix.basename(remotePath)}': ${errorMessage(error)}` });
+      this.post({ type: 'error', operation: 'open-file', error: `Could not read remote file '${posix.basename(remotePath)}': ${errorMessage(error)}` });
       throw error;
     }
     return Buffer.concat(chunks).toString('utf8');
@@ -899,7 +954,7 @@ export class CommanderPanel {
     const listing = await this.client.list(posix.dirname(target));
     this.requireAgentGrant(bridge, params.sessionId);
     const file = listing.find((entry) => entry.name === name && !entry.isDirectory && !entry.isSymbolicLink);
-    if (!file) throw new Error('The requested FTP file was not found.');
+    if (!file) throw new Error('The requested remote file was not found.');
     const maxBytes = 1024 * 1024;
     if (file.size > maxBytes) throw new Error('File is larger than the 1 MiB read limit. Use the approved download workflow for larger files.');
     const stream = new PassThrough();
@@ -911,7 +966,7 @@ export class CommanderPanel {
       size += buffer.length;
       if (size > maxBytes) {
         oversized = true;
-        stream.destroy(new Error('FTP file exceeded the agent read limit.'));
+        stream.destroy(new Error('Remote file exceeded the agent read limit.'));
         return;
       }
       chunks.push(buffer);
@@ -921,9 +976,10 @@ export class CommanderPanel {
       if (oversized) {
         this.connected = false;
         this.stopConnectionMonitor();
+        this.client.close();
         this.revokeAgentAccess();
-        this.post({ type: 'data', remotePath: this.remotePath, remoteEntries: [], profile: this.profile, connected: false, transfer: 'FTP connection closed after an oversized agent read.' });
-        throw new Error('File exceeded the 1 MiB read limit. FTP disconnected to stop the transfer; reconnect before continuing.');
+        this.post({ type: 'data', remotePath: this.remotePath, remoteEntries: [], profile: this.profile, connected: false, transfer: 'Server connection closed after an oversized agent read.' });
+        throw new Error('File exceeded the 1 MiB read limit. The server connection closed to stop the transfer; reconnect before continuing.');
       }
       throw error;
     }
@@ -953,7 +1009,7 @@ export class CommanderPanel {
     for (const segment of directory.split('/').filter(Boolean)) {
       this.requireAgentGrant(bridge, sessionId);
       const entry = (await this.client.list(current)).find((candidate) => candidate.name === segment);
-      if (!entry || !entry.isDirectory || entry.isSymbolicLink) throw new Error('The FTP path is missing, is not a folder, or crosses a symbolic link.');
+      if (!entry || !entry.isDirectory || entry.isSymbolicLink) throw new Error('The remote path is missing, is not a folder, or crosses a symbolic link.');
       current = posix.join(current, segment);
     }
   }
@@ -985,7 +1041,7 @@ export class CommanderPanel {
         remoteEntries = mapRemoteEntries(await this.client.list(this.remotePath), this.remotePath);
       } catch (error) {
         if (this.client.closed) this.markConnectionLost();
-        this.post({ type: 'error', operation: 'remote-listing', error: `FTP folder: ${errorMessage(error)}` });
+        this.post({ type: 'error', operation: 'remote-listing', error: `Remote folder: ${errorMessage(error)}` });
       }
     }
     this.post({
@@ -994,7 +1050,7 @@ export class CommanderPanel {
     });
   }
 
-  private async sendListings(transfer?: string): Promise<void> {
+  private async sendListings(transfer?: string, includeProfile = true): Promise<void> {
     if (this.disposed) return;
     try {
       const localEntries = this.addWorkspaceRelativePaths(await readLocalEntries(this.localPath));
@@ -1009,18 +1065,18 @@ export class CommanderPanel {
         remoteEntries = mapRemoteEntries(await this.client.list(this.remotePath), this.remotePath);
       } catch (error) {
         if (this.client.closed) this.markConnectionLost();
-        this.post({ type: 'error', operation: 'remote-listing', error: `FTP folder: ${errorMessage(error)}` });
+        this.post({ type: 'error', operation: 'remote-listing', error: `Remote folder: ${errorMessage(error)}` });
       }
     }
 
     this.post({
       type: 'data', remotePath: this.remotePath,
-      remoteEntries, profile: this.profile, connected: this.connected, transfer
+      remoteEntries, ...(includeProfile ? { profile: this.profile } : {}), connected: this.connected, transfer
     });
   }
 
   private requireConnection(): void {
-    if (!this.connected) throw new Error('Connect to an FTP server first.');
+    if (!this.connected) throw new Error('Connect to a server first.');
   }
 
   private startConnectionMonitor(): void {
@@ -1050,7 +1106,7 @@ export class CommanderPanel {
       return;
     }
     try {
-      await this.client.sendIgnoringError('NOOP');
+      await this.client.checkHealth();
       if (this.client.closed) this.markConnectionLost();
     } catch {
       this.markConnectionLost();
@@ -1065,7 +1121,7 @@ export class CommanderPanel {
     this.revokeAgentAccess();
     this.post({
       type: 'data', remotePath: this.remotePath, remoteEntries: [], profile: this.profile,
-      connected: false, transfer: 'FTP connection lost. Click Connect to reconnect.'
+      connected: false, transfer: `${this.profile?.protocol === 'sftp' ? 'SFTP' : 'FTP'} connection lost. Click Connect to reconnect.`
     });
   }
 
@@ -1083,7 +1139,7 @@ export class CommanderPanel {
   }
 }
 
-function mapRemoteEntries(entries: FileInfo[], directory: string): FileEntry[] {
+function mapRemoteEntries(entries: RemoteEntry[], directory: string): FileEntry[] {
   return entries
     .filter((entry) => entry.name !== '.' && entry.name !== '..')
     .map((entry) => ({
@@ -1098,7 +1154,7 @@ function mapRemoteEntries(entries: FileInfo[], directory: string): FileEntry[] {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'An unknown FTP error occurred.';
+  return error instanceof Error ? error.message : 'An unknown remote server error occurred.';
 }
 
 function boundedInteger(value: unknown, fallback: number, minimum: number, maximum: number): number {

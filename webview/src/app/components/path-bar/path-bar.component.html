@@ -1,15 +1,15 @@
 <div class="path">
   @if (loading) {
-    <span class="loading-indicator" role="status" [attr.aria-label]="pane === 'local' ? 'Loading local folder' : 'Loading FTP folder'">
+    <span class="loading-indicator" role="status" [attr.aria-label]="pane === 'local' ? 'Loading local folder' : 'Loading remote folder'">
       <span class="material-symbols-outlined loading-symbol">folder_open</span>
       <span class="material-symbols-outlined loading-symbol">folder</span>
       <span class="material-symbols-outlined loading-symbol">folder_copy</span>
     </span>
   }
   @if (pane === 'remote' && !connected) {
-    <nav class="breadcrumbs" aria-label="FTP folder path"><span class="breadcrumb-current">Not connected</span></nav>
+    <nav class="breadcrumbs" aria-label="Remote folder path"><span class="breadcrumb-current">Not connected</span></nav>
   } @else {
-    <nav class="breadcrumbs" [attr.aria-label]="pane === 'local' ? 'Local folder path' : 'FTP folder path'">
+    <nav class="breadcrumbs" [attr.aria-label]="pane === 'local' ? 'Local folder path' : 'Remote folder path'">
       @for (part of parts; track part.path) {
         @if (part.separatorBefore) { <span class="path-separator" aria-hidden="true">/</span> }
         @if (part.clickable) {

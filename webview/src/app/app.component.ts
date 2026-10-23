@@ -1,9 +1,11 @@
 import { ChangeDetectorRef, Component, OnDestroy, OnInit, ViewChild } from '@angular/core';
 import { CommanderFooterComponent } from './components/commander-footer/commander-footer.component';
 import { ConnectionBarComponent } from './components/connection-bar/connection-bar.component';
-import type { ConnectionProfile } from './components/connection-bar/connection-bar.component';
+import { formatForgetConnectionMessage, sameConnectionProfile } from './connection-profile';
+import type { ConnectionProfile } from './connection-profile';
 import { CopyProgressComponent } from './components/copy-progress/copy-progress.component';
 import type { CopyProgress } from './components/copy-progress/copy-progress.component';
+import { ConfirmationDialogComponent } from './components/confirmation-dialog/confirmation-dialog.component';
 import { ErrorDialogComponent } from './components/error-dialog/error-dialog.component';
 import type { FileEntry, SortColumn, SortState } from './components/file-view/file-view.component';
 import { FilePaneComponent } from './components/file-pane/file-pane.component';
@@ -22,6 +24,7 @@ interface HostMessage {
   localEntries?: FileEntry[];
   remoteEntries?: FileEntry[];
   profile?: Partial<ConnectionProfile>;
+  savedProfiles?: ConnectionProfile[];
   logoUrl?: string;
   connected?: boolean;
   error?: string;
@@ -32,7 +35,7 @@ interface HostMessage {
 @Component({
   selector: 'bm-root',
   standalone: true,
-  imports: [CommanderFooterComponent, ConnectionBarComponent, CopyProgressComponent, ErrorDialogComponent, FilePaneComponent],
+  imports: [CommanderFooterComponent, ConnectionBarComponent, CopyProgressComponent, ConfirmationDialogComponent, ErrorDialogComponent, FilePaneComponent],
   templateUrl: './app.component.html',
   styleUrl: './app.component.css'
 })
@@ -64,6 +67,7 @@ export class AppComponent implements OnInit, OnDestroy {
   };
 
   profile: ConnectionProfile = { host: '', port: 21, username: '', protocol: 'ftps' };
+  savedProfiles: ConnectionProfile[] = [];
   logoUrl = '';
   password = '';
   localPath = '';
@@ -81,15 +85,17 @@ export class AppComponent implements OnInit, OnDestroy {
   activePane: Pane = 'local';
   connected = false;
   busy = false;
-  status = 'Choose an FTP server to connect.';
+  status = 'Choose a server to connect.';
   error = '';
   errorTitle = '';
   errorMessage = '';
   errorHint = '';
   copyProgress: CopyProgress | null = null;
+  forgetConfirmationProfile: ConnectionProfile | null = null;
+  forgetRequestPending = false;
 
   get modalOpen(): boolean {
-    return Boolean(this.errorMessage || this.copyProgress);
+    return Boolean(this.errorMessage || this.copyProgress || this.forgetConfirmationProfile);
   }
 
   get filteredLocalEntries(): FileEntry[] {
@@ -119,7 +125,35 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   updateProfile(profile: ConnectionProfile): void {
+    const changed = profile.host !== this.profile.host || profile.port !== this.profile.port
+      || profile.username !== this.profile.username || profile.protocol !== this.profile.protocol;
+    if (changed && this.savedProfiles.some((saved) => sameConnectionProfile(saved, this.profile))) this.password = '';
     this.profile = profile;
+  }
+
+  selectSavedProfile(profile: ConnectionProfile): void {
+    this.profile = profile;
+    this.password = '';
+  }
+
+  forgetSavedProfile(profile: ConnectionProfile): void {
+    this.forgetConfirmationProfile = profile;
+  }
+
+  cancelForgetSavedProfile(): void {
+    this.forgetConfirmationProfile = null;
+  }
+
+  confirmForgetSavedProfile(): void {
+    const profile = this.forgetConfirmationProfile;
+    if (!profile || this.forgetRequestPending) return;
+    this.forgetConfirmationProfile = null;
+    this.forgetRequestPending = true;
+    this.bridge.postMessage({ type: 'forget-connection', profile });
+  }
+
+  forgetConfirmationMessage(profile: ConnectionProfile): string {
+    return formatForgetConnectionMessage(profile);
   }
 
   dismissError(): void {
@@ -236,6 +270,10 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private receive(message: HostMessage): void {
     if (message.progress !== undefined) this.copyProgress = message.progress;
+    if (message.savedProfiles !== undefined) {
+      this.savedProfiles = message.savedProfiles;
+      this.forgetRequestPending = false;
+    }
     if (message.logoUrl !== undefined) this.logoUrl = message.logoUrl;
     if (message.localPath !== undefined) this.localPath = message.localPath;
     if (message.remotePath !== undefined) this.remotePath = message.remotePath;
@@ -259,6 +297,7 @@ export class AppComponent implements OnInit, OnDestroy {
     }
     if (message.connected !== undefined) this.connected = message.connected;
     if (message.error) {
+      if (message.operation === 'forget-connection') this.forgetRequestPending = false;
       this.error = message.error;
       this.errorTitle = errorTitleFor(message.operation);
       this.errorMessage = message.error;
@@ -271,7 +310,7 @@ export class AppComponent implements OnInit, OnDestroy {
     }
     if (this.error) this.status = 'Connection or file operation failed.';
     else if (message.transfer) this.status = message.transfer;
-    else if (message.connected !== undefined) this.status = this.connected ? 'Connected.' : 'Choose an FTP server to connect.';
+    else if (message.connected !== undefined) this.status = this.connected ? 'Connected.' : 'Choose a server to connect.';
     if (message.connected !== undefined || message.error || message.transfer) this.busy = false;
     this.changeDetector.detectChanges();
   }
@@ -311,7 +350,8 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 function errorTitleFor(operation?: string): string {
   switch (operation) {
-    case 'connect': return 'FTP connection failed';
+    case 'connect': return 'Server connection failed';
+    case 'forget-connection': return 'Could not forget saved connection';
     case 'copy': return 'Copy failed';
     case 'delete': return 'Delete failed';
     case 'create-folder': return 'Could not create folder';
@@ -320,7 +360,7 @@ function errorTitleFor(operation?: string): string {
     case 'navigate':
     case 'parent': return 'Could not open folder';
     case 'local-listing': return 'Could not read the local folder';
-    case 'remote-listing': return 'Could not read the FTP folder';
+    case 'remote-listing': return 'Could not read the remote folder';
     case 'refresh': return 'Could not refresh the folder';
     default: return 'Operation failed';
   }
@@ -328,7 +368,7 @@ function errorTitleFor(operation?: string): string {
 
 function errorHintFor(operation?: string): string {
   switch (operation) {
-    case 'connect': return 'Check the server address, port, username, password, and FTP/FTPS setting.';
+    case 'connect': return 'Check the server address, port, username, password, and selected protocol.';
     case 'navigate':
     case 'parent':
     case 'local-listing': return 'Check that the folder exists and that you have permission to access it.';

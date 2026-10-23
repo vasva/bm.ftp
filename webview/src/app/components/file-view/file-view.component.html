@@ -1,7 +1,7 @@
 <div class="filter">
-  <input #searchInput [id]="pane + '-search'" type="search" [attr.aria-label]="pane === 'local' ? 'Filter local files' : 'Filter FTP files'" placeholder="Filter files and folders…" [value]="search" (input)="searchChanged.emit($any($event.target).value)" />
+  <input #searchInput [id]="pane + '-search'" type="search" [attr.aria-label]="pane === 'local' ? 'Filter local files' : 'Filter remote files'" placeholder="Filter files and folders…" [value]="search" (input)="searchChanged.emit($any($event.target).value)" />
   @if (search) {
-    <button type="button" class="clear-search" [attr.aria-label]="pane === 'local' ? 'Clear local file filter' : 'Clear FTP file filter'" title="Clear filter" (click)="$event.stopPropagation(); searchChanged.emit('')"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
+    <button type="button" class="clear-search" [attr.aria-label]="pane === 'local' ? 'Clear local file filter' : 'Clear remote file filter'" title="Clear filter" (click)="$event.stopPropagation(); searchChanged.emit('')"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
   }
 </div>
 <div class="column-head">
