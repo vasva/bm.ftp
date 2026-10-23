@@ -1,7 +1,7 @@
 {
   "name": "bm-ftp-commander",
   "displayName": "bm.ftp — FTP Commander",
-  "description": "Browse local and FTP/FTPS directories in a Norton Commander-inspired VS Code panel.",
+  "description": "Browse local and FTP/FTPS/SFTP directories in a Norton Commander-inspired VS Code panel.",
   "icon": "images/icon.png",
   "version": "0.1.2",
   "publisher": "vasvasnr",
@@ -62,17 +62,21 @@
     "build:webview": "npm --workspace webview run build",
     "compile:extension": "tsc -p tsconfig.extension.json",
     "test": "npm run compile:extension && tsc webview/src/app/selection.ts webview/src/app/modal-keyboard.ts webview/src/app/components/path-bar/path-parts.ts --rootDir webview/src/app --target ES2022 --module commonjs --strict --skipLibCheck --outDir out/test-webview && node --test test/*.test.cjs",
+    "test:e2e": "playwright test",
     "watch:extension": "tsc -p tsconfig.extension.json --watch",
     "package": "npm run build && vsce package --allow-missing-repository"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",
     "basic-ftp": "6.2.3",
+    "ssh2": "^1.17.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.3.1",
+    "@playwright/test": "^1.64.1",
     "@types/node": "24.10.0",
+    "@types/ssh2": "^1.15.6",
     "@types/vscode": "1.102.0",
     "@vscode/vsce": "4.0.0",
     "typescript": "5.9.3"

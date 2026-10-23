@@ -40,6 +40,7 @@ class FakeClient {
     this.noopStarted = undefined;
     this.accessGate = undefined;
     this.accessStarted = undefined;
+    this.accessFailure = false;
     this.listGate = undefined;
     this.downloadFailure = false;
     this.uploadFailure = false;
@@ -67,6 +68,7 @@ class FakeClient {
     this.operations.push(`access:${options.protocol ?? (options.secure ? 'ftps' : 'ftp')}`);
     this.accessStarted?.();
     if (this.accessGate) await this.accessGate;
+    if (this.accessFailure) throw new Error('simulated login failure');
     this.isClosed = false;
   }
 
@@ -224,9 +226,11 @@ Module._load = function(request, parent, isMain) {
   return originalLoad.call(this, request, parent, isMain);
 };
 const { CommanderPanel } = require('../out/commanderPanel.js');
+const { LAST_PROFILE_KEY, SAVED_PROFILES_KEY } = require('../out/savedConnections.js');
+const { getPasswordKey } = require('../out/core.js');
 Module._load = originalLoad;
 
-async function createPanel(t) {
+async function createPanel(t, initialState = {}) {
   clients.length = 0;
   contentProvider = undefined;
   openDocumentContent = undefined;
@@ -245,6 +249,8 @@ async function createPanel(t) {
   workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'bm-ftp-host-'));
   t.after(() => fs.rm(workspaceRoot, { recursive: true, force: true }));
   const messages = [];
+  const globalState = new Map(Object.entries(initialState));
+  const storedSecrets = new Map();
   let receive;
   let dispose;
   const panel = {
@@ -262,8 +268,12 @@ async function createPanel(t) {
     extensionPath: path.resolve(__dirname, '..'),
     globalStorageUri: { fsPath: path.join(workspaceRoot, 'global-storage') },
     subscriptions: [],
-    globalState: { get() { return undefined; }, async update() {} },
-    secrets: { async get() { secretsStarted?.(); if (secretsGate) await secretsGate; return 'test-password'; }, async store() {} }
+    globalState: { get(key) { return globalState.get(key); }, async update(key, value) { if (value === undefined) globalState.delete(key); else globalState.set(key, value); } },
+    secrets: {
+      async get(key) { secretsStarted?.(); if (secretsGate) await secretsGate; return storedSecrets.get(key) ?? 'test-password'; },
+      async store(key, value) { storedSecrets.set(key, value); },
+      async delete(key) { storedSecrets.delete(key); }
+    }
   };
   CommanderPanel.registerReadonlyDocuments();
   const instance = new CommanderPanel(panel, context);
@@ -273,8 +283,55 @@ async function createPanel(t) {
     await instance.operationQueue.enqueue(async () => undefined);
     await new Promise((resolve) => setImmediate(resolve));
   }
-  return { instance, client: clients.at(-1), messages, send, warningCalls, localDeleteCalls, dispose: () => dispose?.() };
+  return { instance, client: clients.at(-1), messages, send, warningCalls, localDeleteCalls, globalState, storedSecrets,
+    setWarning: (answer) => { nextWarning = answer; }, dispose: () => dispose?.() };
 }
+
+test('a failed connection does not save its profile and a successful retry saves it once', async (t) => {
+  const host = await createPanel(t);
+  const profile = { host: 'ftp.example', port: 21, username: 'tester', protocol: 'ftps' };
+  await host.send({ type: 'ready' });
+  host.client.accessFailure = true;
+  await host.send({ type: 'connect', profile, password: 'secret' });
+  assert.equal(host.globalState.has(SAVED_PROFILES_KEY), false);
+  assert.equal(host.messages.some((message) => message.type === 'error' && message.operation === 'connect'), true);
+  assert.equal(host.messages.at(-1).profile, undefined);
+
+  host.client.accessFailure = false;
+  await host.send({ type: 'connect', profile, password: 'secret' });
+  assert.deepEqual(host.globalState.get(SAVED_PROFILES_KEY), [profile]);
+  assert.equal(host.storedSecrets.get(getPasswordKey(profile)), 'secret');
+  await host.send({ type: 'connect', profile: { ...profile, host: 'FTP.EXAMPLE' }, password: 'secret' });
+  assert.equal(host.globalState.get(SAVED_PROFILES_KEY).length, 1);
+  await host.send({ type: 'connect', profile: { ...profile, port: 2121 }, password: 'secret' });
+  assert.equal(host.globalState.get(SAVED_PROFILES_KEY).length, 2);
+});
+
+test('legacy profile migrates once and an explicitly empty saved list stays empty', async (t) => {
+  const legacy = { host: 'legacy.example', port: 21, username: 'old', protocol: 'ftps' };
+  const migrated = await createPanel(t, { [LAST_PROFILE_KEY]: legacy });
+  await migrated.send({ type: 'ready' });
+  assert.deepEqual(migrated.globalState.get(SAVED_PROFILES_KEY), [legacy]);
+  assert.deepEqual(migrated.messages.find((message) => message.savedProfiles)?.savedProfiles, [legacy]);
+
+  const forgotten = await createPanel(t, { [LAST_PROFILE_KEY]: legacy, [SAVED_PROFILES_KEY]: [] });
+  await forgotten.send({ type: 'ready' });
+  assert.deepEqual(forgotten.messages.find((message) => message.savedProfiles)?.savedProfiles, []);
+  assert.equal(forgotten.messages.find((message) => message.savedProfiles)?.profile, undefined);
+});
+
+test('forgetting a saved connection removes only its profile and password', async (t) => {
+  const host = await createPanel(t);
+  const profile = { host: 'ftp.example', port: 21, username: 'tester', protocol: 'ftps' };
+  const another = { ...profile, port: 2121 };
+  await host.send({ type: 'connect', profile, password: 'first' });
+  await host.send({ type: 'connect', profile: another, password: 'second' });
+  await host.send({ type: 'forget-connection', profile });
+  assert.deepEqual(host.globalState.get(SAVED_PROFILES_KEY), [another]);
+  assert.equal(host.storedSecrets.has(getPasswordKey(profile)), false);
+  assert.equal(host.storedSecrets.get(getPasswordKey(another)), 'second');
+  assert.equal(host.globalState.get(LAST_PROFILE_KEY).port, 2121);
+});
 
 test('host serializes FTP listing requests from overlapping webview messages', async (t) => {
   const host = await createPanel(t);
@@ -777,7 +834,7 @@ test('FTP directory symlinks use file removal instead of recursive directory del
 test('FTP deletion rejects disconnected, root, stale, and outside selections', async (t) => {
   const host = await createPanel(t);
   await host.send({ type: 'delete', pane: 'remote', paths: ['/file.txt'] });
-  assert.ok(host.messages.some((message) => message.type === 'error' && /Connect to an FTP server/.test(message.error)));
+  assert.ok(host.messages.some((message) => message.type === 'error' && /Connect to a server/.test(message.error)));
   assert.deepEqual(host.warningCalls, []);
 
   await host.send({ type: 'connect', profile: { host: 'ftp.example', username: 'u' }, password: 'p' });

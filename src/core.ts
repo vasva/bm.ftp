@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as posix from 'node:path/posix';
 
-export type Protocol = 'ftp' | 'ftps';
+export type Protocol = 'ftp' | 'ftps' | 'sftp';
 
 export interface ConnectionProfile {
   host: string;
@@ -41,16 +41,17 @@ export class OperationQueue {
 export function validateProfile(raw: Partial<ConnectionProfile>): ConnectionProfile {
   const host = (raw.host ?? '').trim();
   const username = (raw.username ?? '').trim();
-  const port = Number(raw.port ?? 21);
-  const protocol: Protocol = raw.protocol === 'ftp' ? 'ftp' : 'ftps';
-  if (!host || /[\s\r\n]/.test(host)) throw new Error('Enter a valid FTP host.');
-  if (!username) throw new Error('Enter the FTP username.');
+  const protocol = raw.protocol ?? 'ftps';
+  if (protocol !== 'ftp' && protocol !== 'ftps' && protocol !== 'sftp') throw new Error('Choose FTP, FTPS, or SFTP.');
+  const port = Number(raw.port ?? (protocol === 'sftp' ? 22 : 21));
+  if (!host || /[\s\r\n]/.test(host)) throw new Error('Enter a valid server host.');
+  if (!username) throw new Error('Enter the server username.');
   if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('Enter a port between 1 and 65535.');
   return { host, port, username, protocol };
 }
 
 export function normalizeRemotePath(value: string): string {
-  if (/[\r\n\0]/.test(value)) throw new Error('FTP path contains an invalid character.');
+  if (/[\r\n\0]/.test(value)) throw new Error('Remote path contains an invalid character.');
   return posix.resolve('/', value);
 }
 

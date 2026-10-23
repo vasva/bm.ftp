@@ -1,6 +1,7 @@
 <div class="commander-background" [inert]="modalOpen" [attr.aria-hidden]="modalOpen ? 'true' : null">
-  <bm-connection-bar [profile]="profile" [password]="password" [connected]="connected" [busy]="busy" [logoUrl]="logoUrl"
+  <bm-connection-bar [profile]="profile" [password]="password" [connected]="connected" [busy]="busy || forgetRequestPending" [logoUrl]="logoUrl" [savedProfiles]="savedProfiles"
     (profileChange)="updateProfile($event)" (passwordChange)="password = $event"
+    (savedProfileSelected)="selectSavedProfile($event)" (forgetRequested)="forgetSavedProfile($event)"
     (connectRequested)="connect()" (disconnectRequested)="disconnect()"></bm-connection-bar>
 
   <main class="commander">
@@ -29,4 +30,10 @@
 
 @if (errorMessage) {
   <bm-error-dialog [title]="errorTitle" [message]="errorMessage" [hint]="errorHint" (dismissed)="dismissError()"></bm-error-dialog>
+}
+
+@if (forgetConfirmationProfile; as pendingForget) {
+  <bm-confirmation-dialog title="Forget saved connection?" [message]="forgetConfirmationMessage(pendingForget)"
+    cancelLabel="Cancel" confirmLabel="Forget connection" (confirmed)="confirmForgetSavedProfile()"
+    (cancelled)="cancelForgetSavedProfile()"></bm-confirmation-dialog>
 }

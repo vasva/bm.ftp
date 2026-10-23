@@ -1,7 +1,7 @@
 <header class="pane-heading">
-  <span>{{ pane === 'local' ? 'LOCAL' : 'FTP SERVER' }} @if (pane === 'remote') { <i [class.online]="connected" [class.offline]="!connected" [attr.aria-label]="connected ? 'FTP connected' : 'FTP disconnected'"></i> }</span>
+  <span>{{ pane === 'local' ? 'LOCAL' : 'REMOTE SERVER' }} @if (pane === 'remote') { <i [class.online]="connected" [class.offline]="!connected" [attr.aria-label]="connected ? 'Server connected' : 'Server disconnected'"></i> }</span>
   <div class="pane-actions">
-    <button type="button" class="copy-action up-action" [title]="pane === 'local' ? 'Refresh local folder' : 'Refresh FTP folder'" [attr.aria-label]="pane === 'local' ? 'Refresh local folder' : 'Refresh FTP folder'" (click)="refresh($event)" [disabled]="pane === 'remote' && !connected">
+    <button type="button" class="copy-action up-action" [title]="pane === 'local' ? 'Refresh local folder' : 'Refresh remote folder'" [attr.aria-label]="pane === 'local' ? 'Refresh local folder' : 'Refresh remote folder'" (click)="refresh($event)" [disabled]="pane === 'remote' && !connected">
       <span class="material-symbols-outlined" aria-hidden="true">refresh</span>Reload
     </button>
     <button type="button" class="copy-action up-action" (click)="goUp($event)" [disabled]="pane === 'remote' && !connected">

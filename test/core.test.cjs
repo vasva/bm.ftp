@@ -76,6 +76,15 @@ test('connection profile validation covers defaults, boundaries, and invalid fie
   ]) assert.throws(() => validateProfile(raw));
 });
 
+test('profile validation keeps SFTP and applies protocol-specific port defaults', () => {
+  assert.deepEqual(validateProfile({ host: 'ssh.example', username: 'user', protocol: 'sftp' }), {
+    host: 'ssh.example', port: 22, username: 'user', protocol: 'sftp'
+  });
+  assert.equal(validateProfile({ host: 'ftp.example', username: 'user', protocol: 'ftp' }).port, 21);
+  assert.equal(validateProfile({ host: 'ssh.example', username: 'user', protocol: 'sftp', port: 2022 }).port, 2022);
+  assert.throws(() => validateProfile({ host: 'x', username: 'u', protocol: 'scp' }), /Choose FTP, FTPS, or SFTP/);
+});
+
 test('remote paths are rooted and reject FTP command separators', () => {
   assert.equal(normalizeRemotePath('../folder//file.txt'), '/folder/file.txt');
   assert.equal(normalizeRemotePath('/a/../b'), '/b');

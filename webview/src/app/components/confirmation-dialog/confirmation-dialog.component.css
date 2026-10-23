@@ -1,0 +1,11 @@
+.confirm-backdrop { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; padding: 18px; background: rgb(0 0 0 / 38%); }
+.confirm-dialog { width: min(440px, 100%); padding: 24px; border: 1px solid var(--vscode-panel-border); border-radius: 12px; background: var(--vscode-sideBar-background); color: var(--vscode-foreground); box-shadow: 0 18px 54px #0009; }
+.confirm-icon { display: block; margin: 0 auto 8px; color: var(--vscode-errorForeground, #f14c4c); text-align: center; font-size: 32px; }
+.confirm-dialog h2 { margin: 0 0 12px; text-align: center; font-size: 17px; }
+.confirm-dialog p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+.confirm-actions button { min-width: 82px; min-height: 32px; padding: 5px 12px; border-radius: 6px; font: inherit; cursor: pointer; }
+.confirm-actions .cancel { border: 1px solid var(--vscode-button-secondaryBackground); background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+.confirm-actions .cancel:hover { background: var(--vscode-button-secondaryHoverBackground); }
+.confirm-actions .confirm { border: 1px solid var(--vscode-errorForeground, #c13838); background: var(--vscode-errorForeground, #c13838); color: var(--vscode-button-foreground, #fff); }
+.confirm-actions .confirm:hover { filter: brightness(1.08); }
