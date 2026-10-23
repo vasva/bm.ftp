@@ -3,6 +3,7 @@ CONTRIBUTING.md
 .gitignore
 docs/**
 doc/**
+**/*.node
 test/**
 src/**
 webview/src/**
