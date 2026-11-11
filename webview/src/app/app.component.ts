@@ -9,7 +9,7 @@ import { ConfirmationDialogComponent } from './components/confirmation-dialog/co
 import { ErrorDialogComponent } from './components/error-dialog/error-dialog.component';
 import type { FileEntry, SortColumn, SortState } from './components/file-view/file-view.component';
 import { FilePaneComponent } from './components/file-pane/file-pane.component';
-import { hasVisibleFileSelection } from './selection';
+import { hasVisibleFileSelection, shouldHandleSelectAll, toggleAllSelection } from './selection';
 import { CopyService } from './services/copy.service';
 import { FileListService } from './services/file-list.service';
 import { Pane, SelectionService } from './services/selection.service';
@@ -65,7 +65,21 @@ export class AppComponent implements OnInit, OnDestroy {
   private removeMessageListener?: () => void;
   private readonly handleKeydown = (event: KeyboardEvent) => {
     if (blockBackgroundKeydown(this.modalOpen, event)) return;
-    if (!isEditableTarget(event.target)) {
+    const editableTarget = isEditableTarget(event.target);
+    const focusedPane = event.target instanceof HTMLElement
+      ? event.target.closest('bm-file-pane')?.getAttribute('pane')
+      : null;
+    const pane = focusedPane === 'local' || focusedPane === 'remote' ? focusedPane : null;
+    if (shouldHandleSelectAll(event.key, event, editableTarget, pane, this.activePane)) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      const nextSelection = toggleAllSelection(this.filteredEntries(this.activePane), this.selection.get(this.activePane));
+      this.selection.set(this.activePane, nextSelection.paths, nextSelection.anchorPath);
+      this.changeDetector.detectChanges();
+      return;
+    }
+    if (!editableTarget) {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
         event.preventDefault();
         (this.activePane === 'local' ? this.localPane : this.remotePane)?.focusSearch();
@@ -130,13 +144,13 @@ export class AppComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.removeMessageListener = this.bridge.listen<HostMessage>((message) => this.receive(message));
-    window.addEventListener('keydown', this.handleKeydown);
+    window.addEventListener('keydown', this.handleKeydown, true);
     this.bridge.postMessage({ type: 'ready' });
   }
 
   ngOnDestroy(): void {
     this.removeMessageListener?.();
-    window.removeEventListener('keydown', this.handleKeydown);
+    window.removeEventListener('keydown', this.handleKeydown, true);
   }
 
   updateProfile(profile: ConnectionProfile): void {

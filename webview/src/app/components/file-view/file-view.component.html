@@ -9,7 +9,7 @@
   <button type="button" class="column-sort" [attr.aria-label]="sortLabel('size', 'Size')" (click)="sortChanged.emit('size')">Size <span class="material-symbols-outlined sort-icon" aria-hidden="true">{{ sortIcon('size') }}</span></button>
   <button type="button" class="column-sort" [attr.aria-label]="sortLabel('modified', 'Modified')" (click)="sortChanged.emit('modified')">Modified <span class="material-symbols-outlined sort-icon" aria-hidden="true">{{ sortIcon('modified') }}</span></button>
 </div>
-<div #fileList class="file-list" (focusin)="paneActivated.emit()" (keydown)="handleListKeydown($event)" (contextmenu)="$event.preventDefault()">
+<div #fileList class="file-list" (focusin)="paneActivated.emit()" (contextmenu)="$event.preventDefault()">
   @for (entry of entries; track entry.path) {
     <button type="button" class="file-row" [class.selected]="selectedPaths.includes(entry.path)" (click)="activateEntry(entry, $event, false)" (dblclick)="activateEntry(entry, $event, true)" (keydown)="handleRowKeydown(entry, $event)" (contextmenu)="openContextMenu(entry, $event)">
       <span class="file-name"><span class="material-symbols-outlined file-icon" aria-hidden="true">{{ entry.kind === 'directory' ? 'folder' : 'description' }}</span>{{ entry.name }}</span>

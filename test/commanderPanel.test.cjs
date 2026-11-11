@@ -717,6 +717,83 @@ test('local MCP listing and basename selection respect root, entry type and UI a
   assert.deepEqual(exact.result.unmatchedNames, ['report.txt']);
 });
 
+test('local MCP pane, bounded reads, directory search and navigation stay within the grant', async (t) => {
+  const host = await createPanel(t);
+  const root = await fs.realpath(workspaceRoot);
+  const nested = path.join(root, 'parent', 'target-folder');
+  await fs.mkdir(nested, { recursive: true });
+  const source = path.join(root, 'parent', 'notes.txt');
+  await fs.writeFile(source, 'first line\nsecond line\nthird line');
+  await fs.writeFile(path.join(root, '.env'), 'secret');
+  host.instance.agentBridge = { dispose() {} };
+  host.instance.agentSessionId = 'local-operations-test';
+  host.instance.localAgentRoot = root;
+  host.instance.localAgentGrantId = 'grant';
+  host.instance.localPath = root;
+  const request = (method, params = {}) => host.instance.handleAgentRequest({ method, params: { sessionId: 'local-operations-test', ...params } });
+
+  assert.deepEqual(await request('get_local_pane'), { path: root, revision: 0, root });
+  const bounded = await request('read_local_file', { path: path.join('parent', 'notes.txt'), startLine: 2, maxLines: 1 });
+  assert.deepEqual(bounded, { path: source, text: 'second line', startLine: 2, truncated: true, encoding: 'utf-8' });
+  await assert.rejects(request('read_local_file', { path: path.join(root, '.env') }), /sensitive file is blocked/i);
+  await assert.rejects(request('read_local_file', { path: path.resolve(root, '../outside.txt') }), /outside the granted local root/i);
+
+  const found = await request('find_local_directories', { nameQuery: 'TARGET', maxDepth: 3 });
+  assert.deepEqual(found.matches, [nested]);
+
+  const before = host.messages.length;
+  const pending = request('navigate_local', { path: nested });
+  let message;
+  for (let i = 0; i < 100 && !message; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+    message = host.messages.slice(before).find((item) => item.type === 'agent-ui');
+  }
+  assert.ok(message, 'navigation was sent to the UI');
+  assert.equal(message.action, 'navigate');
+  assert.equal(message.path, nested);
+  await host.send({ type: 'agent-ui-result', requestId: message.requestId, success: true, selectedPaths: [] });
+  assert.deepEqual(await pending, { path: nested, revision: 1, selectedPaths: [] });
+  assert.equal(host.instance.localPath, nested);
+  await assert.rejects(request('navigate_local', { path: path.resolve(root, '../outside') }), /outside the granted local root/i);
+  assert.equal(await fs.readFile(source, 'utf8'), 'first line\nsecond line\nthird line');
+});
+
+test('local MCP content search selects matching visible files and skips sensitive or binary files', async (t) => {
+  const host = await createPanel(t);
+  const root = await fs.realpath(workspaceRoot);
+  const pane = path.join(root, 'pane');
+  await fs.mkdir(pane);
+  const matching = path.join(pane, 'matching.txt');
+  await fs.writeFile(matching, 'The Magic phrase is here.');
+  await fs.writeFile(path.join(pane, 'other.txt'), 'nothing to see');
+  await fs.writeFile(path.join(pane, '.env'), 'Magic phrase secret');
+  await fs.writeFile(path.join(pane, 'binary.bin'), Buffer.from('Magic phrase\0hidden'));
+  host.instance.agentBridge = { dispose() {} };
+  host.instance.agentSessionId = 'local-search-test';
+  host.instance.localAgentRoot = root;
+  host.instance.localAgentGrantId = 'grant';
+  host.instance.localPath = pane;
+  const request = (method, params = {}) => host.instance.handleAgentRequest({ method, params: { sessionId: 'local-search-test', ...params } });
+
+  const before = host.messages.length;
+  const pending = request('search_local_text_and_select', { text: 'magic phrase' });
+  void pending.catch(() => undefined);
+  let message;
+  for (let i = 0; i < 100 && !message; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    message = host.messages.slice(before).find((item) => item.type === 'agent-ui');
+  }
+  assert.ok(message, 'matching files were sent to the UI for selection');
+  assert.equal(message.action, 'select');
+  assert.deepEqual(message.paths, [matching]);
+  await host.send({ type: 'agent-ui-result', requestId: message.requestId, success: true, selectedPaths: message.paths });
+  const result = await pending;
+  assert.deepEqual(result.selectedPaths, [matching]);
+  assert.equal(result.matchedCount, 1);
+  assert.equal(result.skipped, 2);
+  await assert.rejects(request('search_local_text_and_select', { text: '   ' }), /enter a search text/i);
+});
+
 test('remote MCP listing and basename selection respect root, entry type and UI acknowledgement', async (t) => {
   const host = await createPanel(t);
   host.client.entries.set('/', [{ name: 'safe', size: 0, isFile: false, isDirectory: true }]);

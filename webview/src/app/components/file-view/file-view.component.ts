@@ -107,15 +107,6 @@ export class FileViewComponent implements OnChanges, AfterViewInit {
     this.focusRow(event.currentTarget, direction);
   }
 
-  handleListKeydown(event: KeyboardEvent): void {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
-      event.preventDefault();
-      this.paneActivated.emit();
-      const paths = this.entries.map((entry) => entry.path);
-      this.selection.set(this.pane, paths, paths[0] ?? '');
-    }
-  }
-
   openContextMenu(entry: FileEntry, event: MouseEvent): void {
     event.preventDefault();
     event.stopPropagation();

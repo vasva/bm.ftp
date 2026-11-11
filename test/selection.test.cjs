@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { hasVisibleFileSelection, isSelectionToggleKey, reconcileSelection, selectionModeForModifiers, updateSelection } = require('../out/test-webview/selection.js');
+const { hasVisibleFileSelection, isSelectionToggleKey, reconcileSelection, selectionModeForModifiers, shouldHandleSelectAll, toggleAllSelection, updateSelection } = require('../out/test-webview/selection.js');
 
 const entries = [
   { name: 'alpha.txt', path: '/alpha.txt', kind: 'file' },
@@ -43,6 +43,28 @@ test('Insert and Space are the keyboard selection toggles', () => {
   assert.equal(isSelectionToggleKey('Insert'), true);
   assert.equal(isSelectionToggleKey(' '), true);
   assert.equal(isSelectionToggleKey('Enter'), false);
+});
+
+test('Ctrl+A and Command+A are handled only in the focused active pane', () => {
+  assert.equal(shouldHandleSelectAll('a', { ctrlKey: true, metaKey: false }, false, 'local', 'local'), true);
+  assert.equal(shouldHandleSelectAll('A', { ctrlKey: false, metaKey: true }, false, 'remote', 'remote'), true);
+  assert.equal(shouldHandleSelectAll('a', { ctrlKey: false, metaKey: false }, false, 'local', 'local'), false);
+  assert.equal(shouldHandleSelectAll('a', { ctrlKey: true, metaKey: false }, true, 'local', 'local'), false);
+  assert.equal(shouldHandleSelectAll('a', { ctrlKey: true, metaKey: false }, false, null, 'local'), false);
+  assert.equal(shouldHandleSelectAll('a', { ctrlKey: true, metaKey: false }, false, 'remote', 'local'), false);
+});
+
+test('select-all chooses every visible file and folder and toggles off when all are selected', () => {
+  assert.deepEqual(toggleAllSelection(entries, []), {
+    paths: ['/alpha.txt', '/folder', '/beta.txt', '/omega'],
+    anchorPath: '/alpha.txt'
+  });
+  assert.deepEqual(toggleAllSelection(entries, ['/omega', '/beta.txt', '/folder', '/alpha.txt']), { paths: [], anchorPath: '' });
+  assert.deepEqual(toggleAllSelection(entries, ['/alpha.txt']), {
+    paths: ['/alpha.txt', '/folder', '/beta.txt', '/omega'],
+    anchorPath: '/alpha.txt'
+  });
+  assert.deepEqual(toggleAllSelection([], []), { paths: [], anchorPath: '' });
 });
 
 test('select-all callers can prune hidden or deleted entries without losing folders in view', () => {

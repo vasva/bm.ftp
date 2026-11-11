@@ -34,6 +34,14 @@ export class FilePaneComponent {
 
   @ViewChild(FileViewComponent) private fileView?: FileViewComponent;
 
+  activatePane(event: MouseEvent): void {
+    this.paneActivated.emit(this.pane);
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.closest('button, input, select, textarea, a, [contenteditable="true"], [tabindex]:not([tabindex="-1"])')) return;
+    if (event.currentTarget instanceof HTMLElement) event.currentTarget.focus();
+  }
+
   focusSearch(): void {
     this.fileView?.focusSearch();
   }

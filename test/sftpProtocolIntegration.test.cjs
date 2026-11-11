@@ -203,6 +203,7 @@ test('real SFTP host rejects an untrusted key before auth, then browses home, vi
   const bridge = { endpoint: 'loopback', token: 'test-only', dispose() {} };
   host.agentBridge = bridge;
   host.agentRoot = '/home/tester';
+  host.remoteAccessGranted = true;
   host.agentSessionId = 'sftp-agent-session';
   const agentListing = await host.handleAgentRequest({ method: 'list_directory', params: { sessionId: 'sftp-agent-session', path: '/remote-tree' } });
   assert.equal(agentListing.path, '/remote-tree');

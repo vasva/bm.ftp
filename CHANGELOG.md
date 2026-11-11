@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5 — 2026-11-11
+
+- Added Ctrl/Cmd+A selection for all visible entries in the focused active pane; pressing it again clears the selection.
+
 ## 0.1.4 — 2026-11-11
 
 ### Added
