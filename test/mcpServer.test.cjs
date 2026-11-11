@@ -43,12 +43,25 @@ test('stdio MCP server exposes read-only FTP tools through the authenticated bri
   await client.connect(transport);
 
   const { tools } = await client.listTools();
-  assert.deepEqual(tools.map((tool) => tool.name).sort(), ['get_session', 'list_directory', 'read_file', 'search_files']);
-  assert.ok(tools.every((tool) => tool.annotations?.readOnlyHint === true));
+  assert.deepEqual(tools.map((tool) => tool.name).sort(), ['find_local_directories', 'get_local_pane', 'get_session', 'list_directory', 'list_local_directory', 'list_remote_directory', 'navigate_local', 'read_file', 'read_local_file', 'search_files', 'search_local_text_and_select', 'select_local_files', 'select_remote_files']);
+  assert.equal(tools.find((tool) => tool.name === 'list_local_directory').annotations.readOnlyHint, true);
+  assert.equal(tools.find((tool) => tool.name === 'select_local_files').annotations.readOnlyHint, false);
+  assert.equal(tools.find((tool) => tool.name === 'list_remote_directory').annotations.readOnlyHint, true);
+  assert.equal(tools.find((tool) => tool.name === 'select_remote_files').annotations.readOnlyHint, false);
   const session = await client.callTool({ name: 'get_session', arguments: {} });
   assert.equal(session.structuredContent.sessionId, 'session-1');
   const file = await client.callTool({ name: 'read_file', arguments: { sessionId: 'session-1', path: '/README.md' } });
   assert.equal(file.structuredContent.text, 'safe test contents');
+  await client.callTool({ name: 'select_local_files', arguments: { sessionId: 'session-1', nameContains: '.' } });
+  assert.equal(requests.at(-1).method, 'select_local_files');
+  assert.equal(requests.at(-1).params.includeDirectories, false);
+  const invalid = await client.callTool({ name: 'select_local_files', arguments: { sessionId: 'session-1', names: ['a'], nameContains: '.' } });
+  assert.equal(invalid.isError, true);
+  await client.callTool({ name: 'select_remote_files', arguments: { sessionId: 'session-1', nameContains: '.' } });
+  assert.equal(requests.at(-1).method, 'select_remote_files');
+  assert.equal(requests.at(-1).params.includeDirectories, false);
+  const invalidRemote = await client.callTool({ name: 'select_remote_files', arguments: { sessionId: 'session-1', names: ['a'], nameContains: '.' } });
+  assert.equal(invalidRemote.isError, true);
   assert.ok(requests.every((request) => request.token === token));
   assert.ok(requests.every((request) => !('password' in request.params)));
 });

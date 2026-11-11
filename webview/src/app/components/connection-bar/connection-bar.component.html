@@ -1,5 +1,15 @@
 <header class="toolbar">
-  <div class="brand"><img class="brand-mark" [src]="logoUrl" alt="" /><div><strong>bm.ftp</strong><small>FILE COMMANDER</small></div><span class="brand-beta">BETA</span></div>
+  <div class="brand">
+    <img class="brand-mark" [src]="logoUrl" alt="" />
+    <div><strong>bm.ftp</strong><small>FILE COMMANDER</small></div>
+    <span class="brand-beta">BETA</span>
+    <button type="button" class="mcp-toggle" [class.active]="agentAccessActive && agentRemoteAccess" [class.local-only]="agentAccessActive && !agentRemoteAccess" [class.inactive]="!agentAccessActive"
+      [disabled]="agentAccessPending" [attr.aria-pressed]="agentAccessActive"
+      [attr.aria-label]="agentAccessLabel" [title]="agentAccessLabel"
+      (click)="agentAccessToggleRequested.emit()">
+      <span class="mcp-icon material-symbols-outlined" aria-hidden="true">hub</span><span>{{ agentAccessActive && !agentRemoteAccess ? 'MCP local' : 'MCP' }}</span>
+    </button>
+  </div>
   @if (savedProfiles.length) {
     <div class="saved-connections" (click)="$event.stopPropagation()">
       <button type="button" class="saved-trigger" aria-label="Saved connections" aria-haspopup="true"

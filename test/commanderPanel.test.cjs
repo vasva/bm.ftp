@@ -283,7 +283,7 @@ async function createPanel(t, initialState = {}) {
     await instance.operationQueue.enqueue(async () => undefined);
     await new Promise((resolve) => setImmediate(resolve));
   }
-  return { instance, client: clients.at(-1), messages, send, warningCalls, localDeleteCalls, globalState, storedSecrets,
+  return { instance, context, client: clients.at(-1), messages, send, warningCalls, localDeleteCalls, globalState, storedSecrets,
     setWarning: (answer) => { nextWarning = answer; }, dispose: () => dispose?.() };
 }
 
@@ -573,9 +573,10 @@ test('host MCP access enforces granted-root, session, sensitive-file, binary, an
   await host.send({ type: 'connect', profile: { host: 'ftp.example', username: 'u' }, password: 'p' });
   CommanderPanel.current = host.instance;
   const sessionId = host.instance.agentSessionId;
-  await host.instance.grantAgentAccess('/safe', sessionId);
+  await host.instance.grantAgentAccess('/safe', await fs.realpath(workspaceRoot), sessionId);
   const request = (method, params = {}) => host.instance.handleAgentRequest({ method, params });
 
+  assert.equal((await request('get_session')).allowedRoot, '/safe');
   const listing = await request('list_directory', { sessionId, path: '/' });
   assert.deepEqual(listing.entries.map((entry) => entry.path), ['/.env', '/bad-encoding.txt', '/binary.bin', '/notes.txt']);
   assert.equal((await request('read_file', { sessionId, path: '/notes.txt' })).text, 'text');
@@ -587,6 +588,208 @@ test('host MCP access enforces granted-root, session, sensitive-file, binary, an
 
   host.instance.revokeAgentAccess();
   await assert.rejects(request('list_directory', { sessionId, path: '/' }), /revoked/i);
+});
+
+test('granting MCP access opens the panel if none is open', async (t) => {
+  const host = await createPanel(t);
+  CommanderPanel.current = undefined;
+  let created = 0;
+  vscodeMock.window.createWebviewPanel = () => { created++; return host.instance.panel; };
+  t.after(() => { CommanderPanel.close(); delete vscodeMock.window.createWebviewPanel; });
+  host.setWarning('Grant agent access');
+  await CommanderPanel.enableAgentAccess(host.context);
+  assert.equal(created, 1);
+  const session = await CommanderPanel.current.handleAgentRequest({ method: 'get_session', params: {} });
+  assert.equal(session.mcpAvailable, true);
+  assert.equal(session.remoteConnected, false);
+  assert.ok(session.capabilities.includes('list_local_directory'));
+});
+
+test('offline MCP grant authorizes both roots and FTP works after connecting', async (t) => {
+  const host = await createPanel(t);
+  host.instance.localPath = await fs.realpath(workspaceRoot);
+  CommanderPanel.current = host.instance;
+  host.setWarning('Grant agent access');
+  await fs.writeFile(path.join(workspaceRoot, 'local.txt'), 'local text');
+  await CommanderPanel.enableAgentAccess(host.context);
+  const sessionId = host.instance.agentSessionId;
+  const request = (method, params = {}) => host.instance.handleAgentRequest({ method, params: { sessionId, ...params } });
+  let session = await request('get_session');
+  assert.equal(session.mcpAvailable, true);
+  assert.equal(session.remoteConnected, false);
+  assert.equal(session.remoteAccessGranted, true);
+  assert.ok(session.capabilities.includes('list_local_directory'));
+  assert.equal(session.capabilities.includes('list_directory'), true);
+  assert.match(host.warningCalls.at(-1)[0], /FTP root '\/' on any server connected later/);
+  assert.ok((await request('list_local_directory')).entries.some((entry) => entry.name === 'local.txt'));
+  assert.equal((await request('read_local_file', { path: path.join(host.instance.localPath, 'local.txt') })).text, 'local text');
+  await assert.rejects(request('list_directory', { path: '/' }), /disconnected/i);
+  const bridge = host.instance.agentBridge;
+  await host.send({ type: 'connect', profile: { host: 'ftp.example', username: 'u' }, password: 'p' });
+  session = await request('get_session');
+  assert.equal(session.remoteConnected, true);
+  assert.equal(session.remoteAccessGranted, true);
+  assert.equal(host.instance.agentBridge, bridge);
+  assert.deepEqual((await request('list_directory', { path: '/' })).entries, []);
+  assert.ok((await request('list_local_directory')).entries.some((entry) => entry.name === 'local.txt'));
+  await CommanderPanel.enableAgentAccess(host.context);
+  assert.equal((await request('get_session')).remoteAccessGranted, true);
+  assert.deepEqual((await request('list_directory', { path: '/' })).entries, []);
+});
+
+test('FTP disconnect and connection loss preserve both MCP grants', async (t) => {
+  const host = await createPanel(t);
+  host.instance.localPath = await fs.realpath(workspaceRoot);
+  CommanderPanel.current = host.instance;
+  host.setWarning('Grant agent access');
+  await host.send({ type: 'connect', profile: { host: 'ftp.example', username: 'u' }, password: 'p' });
+  await CommanderPanel.enableAgentAccess(host.context);
+  const sessionId = host.instance.agentSessionId;
+  const request = (method, params = {}) => host.instance.handleAgentRequest({ method, params: { sessionId, ...params } });
+  const bridge = host.instance.agentBridge;
+  assert.equal((await request('get_session')).remoteAccessGranted, true);
+  await host.send({ type: 'disconnect' });
+  assert.equal(host.instance.agentBridge, bridge);
+  assert.equal((await request('get_session')).remoteConnected, false);
+  assert.equal((await request('get_session')).remoteAccessGranted, true);
+  await assert.rejects(request('list_remote_directory'), /disconnected/i);
+  await request('list_local_directory');
+  await host.send({ type: 'connect', profile: { host: 'ftp.example', username: 'u' }, password: 'p' });
+  assert.deepEqual((await request('list_directory', { path: '/' })).entries, []);
+  const currentBridge = host.instance.agentBridge;
+  host.instance.markConnectionLost();
+  assert.equal(host.instance.agentBridge, currentBridge);
+  assert.equal((await request('get_session')).remoteConnected, false);
+  assert.equal((await request('get_session')).remoteAccessGranted, true);
+  await request('list_local_directory');
+  CommanderPanel.revokeAgentAccess();
+  await assert.rejects(request('get_session'), /revoked/i);
+});
+
+test('local MCP listing and basename selection respect root, entry type and UI acknowledgement', async (t) => {
+  const host = await createPanel(t);
+  const root = await fs.realpath(workspaceRoot);
+  await fs.mkdir(path.join(root, 'pane'));
+  const pane = path.join(root, 'pane');
+  await fs.writeFile(path.join(pane, 'report.txt'), 'no punctuation here');
+  await fs.writeFile(path.join(pane, 'plain'), 'content has a dot.');
+  await fs.mkdir(path.join(pane, 'folder.name'));
+  await fs.symlink(os.tmpdir(), path.join(pane, 'outside.link'), 'dir');
+  host.instance.connected = true;
+  host.instance.agentBridge = { dispose() {} };
+  host.instance.agentSessionId = 'local-test';
+  host.instance.localAgentRoot = root;
+  host.instance.localAgentGrantId = 'grant';
+  host.instance.localPath = pane;
+  const request = (method, params = {}) => host.instance.handleAgentRequest({ method, params: { sessionId: 'local-test', ...params } });
+  const listing = await request('list_local_directory');
+  assert.deepEqual(listing.entries, [
+    { name: 'folder.name', path: path.join('pane', 'folder.name'), type: 'directory' },
+    { name: 'plain', path: path.join('pane', 'plain'), type: 'file' },
+    { name: 'report.txt', path: path.join('pane', 'report.txt'), type: 'file' }
+  ]);
+  await assert.rejects(request('list_local_directory', { path: path.dirname(root) }), /outside the granted local root/i);
+  await assert.rejects(request('list_local_directory', { path: path.join(pane, 'outside.link') }), /symbolic links/i);
+  await assert.rejects(request('select_local_files', { path: path.dirname(root), nameContains: '.' }), /outside the granted local root/i);
+  await assert.rejects(request('select_local_files', { names: ['../report.txt'] }), /basenames/i);
+  const select = async (params, keep = () => true) => {
+    const before = host.messages.length;
+    const pending = request('select_local_files', params);
+    let message;
+    for (let i = 0; i < 100 && !message; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+      message = host.messages.slice(before).find((item) => item.type === 'agent-ui');
+    }
+    assert.ok(message, 'selection was sent to the UI');
+    await host.send({ type: 'agent-ui-result', requestId: message.requestId, success: true, selectedPaths: message.paths.filter(keep) });
+    return { message, result: await pending };
+  };
+  const files = await select({ nameContains: '.' });
+  assert.deepEqual(files.message.paths, [path.join(pane, 'report.txt')]);
+  assert.deepEqual(files.result.selectedPaths, [path.join('pane', 'report.txt')]);
+  assert.equal(files.result.count, 1);
+  const withDirectories = await select({ nameContains: '.', includeDirectories: true });
+  assert.deepEqual(withDirectories.result.selectedPaths, [path.join('pane', 'folder.name'), path.join('pane', 'report.txt')]);
+  assert.equal(withDirectories.result.count, 2);
+  const exact = await select({ names: ['report.txt', 'plain'] }, (item) => item.endsWith('plain'));
+  assert.deepEqual(exact.result.selectedPaths, [path.join('pane', 'plain')]);
+  assert.equal(exact.result.count, 1);
+  assert.deepEqual(exact.result.unmatchedNames, ['report.txt']);
+});
+
+test('remote MCP listing and basename selection respect root, entry type and UI acknowledgement', async (t) => {
+  const host = await createPanel(t);
+  host.client.entries.set('/', [{ name: 'safe', size: 0, isFile: false, isDirectory: true }]);
+  host.client.entries.set('/safe', [{ name: 'pane', size: 0, isFile: false, isDirectory: true }, { name: 'other', size: 0, isFile: false, isDirectory: true }]);
+  host.client.entries.set('/safe/pane', [
+    { name: 'folder.name', size: 0, isFile: false, isDirectory: true },
+    { name: 'plain', size: 18, isFile: true, isDirectory: false },
+    { name: 'report.txt', size: 19, isFile: true, isDirectory: false },
+    { name: 'outside.link', size: 0, isFile: false, isDirectory: true, isSymbolicLink: true }
+  ]);
+  host.client.remoteFiles.set('/safe/pane/plain', 'content has a dot.');
+  host.client.remoteFiles.set('/safe/pane/report.txt', 'no punctuation here');
+  await host.send({ type: 'connect', profile: { host: 'ftp.example', username: 'u' }, password: 'p' });
+  CommanderPanel.current = host.instance;
+  const sessionId = host.instance.agentSessionId;
+  await host.instance.grantAgentAccess('/safe', await fs.realpath(workspaceRoot), sessionId);
+  host.instance.remotePath = '/safe/pane';
+  const request = (method, params = {}) => host.instance.handleAgentRequest({ method, params: { sessionId, ...params } });
+  const listing = await request('list_remote_directory');
+  assert.deepEqual(listing.entries, [
+    { name: 'folder.name', path: '/pane/folder.name', type: 'directory' },
+    { name: 'plain', path: '/pane/plain', type: 'file' },
+    { name: 'report.txt', path: '/pane/report.txt', type: 'file' }
+  ]);
+  await assert.rejects(request('list_remote_directory', { path: '/../private' }), /outside the granted FTP root/i);
+  await assert.rejects(request('select_remote_files', { path: '/../private', nameContains: '.' }), /outside the granted FTP root/i);
+  await assert.rejects(request('select_remote_files', { path: '/other', nameContains: '.' }), /current remote folder/i);
+  await assert.rejects(request('select_remote_files', { names: ['../report.txt'] }), /basenames/i);
+  const select = async (params, keep = () => true, beforeAck = () => {}) => {
+    const before = host.messages.length;
+    const pending = request('select_remote_files', params);
+    void pending.catch(() => undefined);
+    let message;
+    for (let i = 0; i < 100 && !message; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+      message = host.messages.slice(before).find((item) => item.type === 'agent-ui');
+    }
+    assert.ok(message, 'selection was sent to the UI');
+    assert.equal(message.pane, 'remote');
+    beforeAck();
+    await host.send({ type: 'agent-ui-result', requestId: message.requestId, success: true, selectedPaths: [...message.paths.filter(keep), '/outside/file.txt'] });
+    return { message, result: await pending };
+  };
+  const files = await select({ nameContains: '.' });
+  assert.deepEqual(files.message.paths, ['/safe/pane/report.txt']);
+  assert.deepEqual(files.result.selectedPaths, ['/pane/report.txt']);
+  assert.equal(files.result.count, 1);
+  const withDirectories = await select({ nameContains: '.', includeDirectories: true });
+  assert.deepEqual(withDirectories.result.selectedPaths, ['/pane/folder.name', '/pane/report.txt']);
+  assert.equal(withDirectories.result.count, 2);
+  const exact = await select({ names: ['report.txt', 'plain'] }, (item) => item.endsWith('/plain'));
+  assert.deepEqual(exact.result.selectedPaths, ['/pane/plain']);
+  assert.equal(exact.result.count, 1);
+  assert.deepEqual(exact.result.unmatchedNames, ['report.txt']);
+  await assert.rejects(select({ nameContains: '.' }, () => true, () => { host.instance.remoteRevision++; }), /remote pane changed/i);
+  await assert.rejects(select({ nameContains: '.' }, () => true, () => { host.instance.connectionRevision++; }), /FTP connection changed/i);
+  assert.equal(host.client.operations.some((operation) => operation.startsWith('download:')), false);
+});
+
+test('remote MCP rejects an in-flight listing when the FTP connection changes', async (t) => {
+  const host = await createPanel(t);
+  await host.send({ type: 'connect', profile: { host: 'ftp.example', username: 'u' }, password: 'p' });
+  CommanderPanel.current = host.instance;
+  const sessionId = host.instance.agentSessionId;
+  await host.instance.grantAgentAccess('/', await fs.realpath(workspaceRoot), sessionId);
+  let release;
+  host.client.listGate = new Promise((resolve) => { release = resolve; });
+  const pending = host.instance.handleAgentRequest({ method: 'list_remote_directory', params: { sessionId } });
+  for (let i = 0; i < 100 && !host.client.activeLists; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(host.client.activeLists, 1);
+  host.instance.connectionRevision++;
+  release();
+  await assert.rejects(pending, /FTP connection changed/i);
 });
 
 test('local-to-FTP copy reports transfer and validation progress before completing', async (t) => {
