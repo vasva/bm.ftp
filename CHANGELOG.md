@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.5 — 2026-11-11
+
+- Added Ctrl/Cmd+A selection for all visible entries in the focused active pane; pressing it again clears the selection.
+
+## 0.1.4 — 2026-11-11
+
+### Added
+
+- MCP access for local and remote panels, controlled by a visible grant/revoke toggle.
+- Directory listing and name-based selection for both panels, plus local content search, panel navigation, and bounded text reads.
+- Offline MCP activation with authorization for FTP root `/` on a server connected later.
+
+### Scope
+
+- MCP can list, search, navigate, select, and read. It cannot write, delete, upload, or download files.
+- MCP reads and content searches may send file text to the selected AI model.
+
 ## 0.1.3
 
 - Fixed Windows activation failing with a `Bad Image` error caused by a macOS native SSH binary in the extension package.

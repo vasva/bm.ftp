@@ -27,6 +27,10 @@ interface PanelMessage {
   password?: string;
   relative?: boolean;
   profile?: Partial<ConnectionProfile>;
+  requestId?: string;
+  success?: boolean;
+  error?: string;
+  selectedPaths?: string[];
 }
 
 interface CopyProgress {
@@ -98,29 +102,40 @@ export class CommanderPanel {
     CommanderPanel.current = undefined;
   }
 
-  static async enableAgentAccess(): Promise<void> {
+  static async enableAgentAccess(context: vscode.ExtensionContext): Promise<void> {
+    CommanderPanel.createOrShow(context);
     const panel = CommanderPanel.current;
-    if (!panel?.connected) throw new Error('Connect to a server in bm.ftp first.');
-    const sessionId = panel.agentSessionId;
-    const root = await vscode.window.showInputBox({
-      title: 'Grant remote access to agents',
-      prompt: 'Remote directory root available to the agent. Use / for the server root.',
-      value: panel.remotePath || '/',
-      validateInput: (value) => {
-        if (!value.startsWith('/') || /[\\\0\r\n\x01-\x1f\x7f]/.test(value)) return 'Enter an absolute remote directory path beginning with / and without control characters or backslashes.';
-        return undefined;
+    if (!panel) throw new Error('Open bm.ftp first.');
+    if (panel.agentGrantPending) return;
+    panel.agentGrantPending = true;
+    panel.postAgentAccessState();
+    try {
+      const sessionId = panel.agentSessionId;
+      const remoteConnected = panel.connected;
+      const connectionRevision = panel.connectionRevision;
+      const accessRevision = panel.agentAccessRevision;
+      const localRoot = await fs.realpath(path.parse(os.homedir()).root);
+      if (!panel.isGrantSessionCurrent(sessionId, connectionRevision) || panel.agentAccessRevision !== accessRevision) throw new Error('Agent access or the FTP session changed while access was being granted. Try again.');
+      const confirmed = await vscode.window.showWarningMessage(
+        `Allow the agent to list, search, and read text files under local filesystem root '${localRoot}' and FTP root '/'${remoteConnected ? ' on the connected server' : ' on any server connected later'}? Local and remote text contents may be sent to the AI model. The agent can navigate panes and change selections; it cannot write or delete files through this access. Access remains authorized across FTP connections until revoked or bm.ftp closes.`,
+        { modal: true }, 'Grant agent access'
+      );
+      if (confirmed !== 'Grant agent access') return;
+      if (!panel.isGrantSessionCurrent(sessionId, connectionRevision) || panel.agentAccessRevision !== accessRevision) throw new Error('Agent access or the FTP session changed while access was being granted. Try again.');
+      if (panel.agentBridge && panel.localAgentRoot) {
+        if (panel.localAgentRoot !== localRoot) throw new Error('The granted local root changed. Revoke access and grant it again.');
+        panel.agentRoot = '/';
+        panel.remoteAccessGranted = true;
+        CommanderPanel.agentAccessChanged.fire();
+        panel.postAgentAccessState();
+        void vscode.window.showInformationMessage(`Agent access granted for FTP root / and local root ${localRoot}.`);
+        return;
       }
-    });
-    if (root === undefined) return;
-    if (!panel.isGrantSessionCurrent(sessionId)) throw new Error('The FTP session changed while access was being granted. Try again.');
-    const normalizedRoot = normalizeRemotePath(root);
-    const confirmed = await vscode.window.showWarningMessage(
-      `Allow the connected agent to list folders, search names, and read text files under remote root '${normalizedRoot}'? File contents may be sent to the selected AI model. Access ends when you disconnect or close bm.ftp.`,
-      { modal: true }, 'Grant read-only access'
-    );
-    if (confirmed !== 'Grant read-only access') return;
-    if (!panel.isGrantSessionCurrent(sessionId)) throw new Error('The FTP session changed while access was being granted. Try again.');
-    await panel.grantAgentAccess(normalizedRoot, sessionId);
+      await panel.grantAgentAccess('/', localRoot, sessionId, true, connectionRevision);
+    } finally {
+      panel.agentGrantPending = false;
+      panel.postAgentAccessState();
+    }
   }
 
   static getAgentServerDefinition(): vscode.McpStdioServerDefinition[] {
@@ -148,6 +163,8 @@ export class CommanderPanel {
   private localPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir();
   private remotePath = '/';
   private connected = false;
+  private remoteAccessGranted = false;
+  private connectionRevision = 0;
   private disposed = false;
   private copyProgress: CopyProgress | undefined;
   private profile: ConnectionProfile | undefined;
@@ -155,8 +172,15 @@ export class CommanderPanel {
   private profilesLoaded = false;
   private readonly operationQueue = new OperationQueue();
   private agentBridge: AgentBridge | undefined;
+  private agentGrantPending = false;
+  private agentAccessRevision = 0;
   private agentRoot = '/';
-  private agentSessionId = '';
+  private localAgentRoot: string | undefined;
+  private localAgentGrantId = '';
+  private localRevision = 0;
+  private remoteRevision = 0;
+  private readonly agentUiRequests = new Map<string, (message: PanelMessage) => void>();
+  private agentSessionId = randomBytes(16).toString('hex');
   private codexGrantFile: string | undefined;
   private connectionMonitor: NodeJS.Timeout | undefined;
   private connectionCheckPending = false;
@@ -218,15 +242,27 @@ export class CommanderPanel {
     if (this.disposed) return;
     try {
       switch (message.type) {
+        case 'agent-ui-result':
+          if (message.requestId) this.agentUiRequests.get(message.requestId)?.(message);
+          break;
         case 'ready':
           await this.sendInitialState();
+          break;
+        case 'toggle-agent-access':
+          if (this.agentGrantPending) break;
+          try {
+            if (this.agentBridge && !(this.connected && !this.remoteAccessGranted)) this.revokeAgentAccess();
+            else await CommanderPanel.enableAgentAccess(this.context);
+          } finally {
+            this.postAgentAccessState();
+          }
           break;
         case 'connect':
           await this.connect(message.profile ?? {}, message.password ?? '');
           break;
         case 'disconnect':
           this.stopConnectionMonitor();
-          this.revokeAgentAccess();
+          this.advanceConnectionRevision();
           this.client.close();
           this.connected = false;
           await this.refresh();
@@ -275,6 +311,7 @@ export class CommanderPanel {
     const logoUri = vscode.Uri.joinPath(this.context.extensionUri, 'media', 'webview', 'browser', 'assets', 'westbohemia-logo-animated-transparent-128.png');
     const logoUrl = this.panel.webview.asWebviewUri(logoUri).toString();
     this.post({ type: 'data', localPath: this.localPath, remotePath: this.remotePath, profile, savedProfiles: this.savedProfiles, connected: this.connected, logoUrl });
+    this.postAgentAccessState();
     await this.refresh();
   }
 
@@ -298,7 +335,7 @@ export class CommanderPanel {
     if (!password) throw new Error('Enter the server password.');
 
     this.stopConnectionMonitor();
-    this.revokeAgentAccess();
+    this.advanceConnectionRevision();
     this.client.close();
     this.connected = false;
     if (profile.protocol === 'sftp') {
@@ -323,8 +360,8 @@ export class CommanderPanel {
       this.savedProfiles = savedProfiles;
     }
     this.profile = profile;
+    this.connectionRevision++;
     this.connected = true;
-    this.agentSessionId = randomBytes(16).toString('hex');
     this.startConnectionMonitor();
     await this.context.globalState.update(LAST_PROFILE_KEY, profile);
     await this.context.secrets.store(passwordKey, password);
@@ -362,12 +399,14 @@ export class CommanderPanel {
   private async navigate(pane: Pane | undefined, requestedPath: string | undefined): Promise<void> {
     if (!pane || !requestedPath) return;
     if (pane === 'local') {
+      this.localRevision++;
       const targetPath = path.resolve(requestedPath);
       await fs.readdir(targetPath);
       if (this.disposed) return;
       this.localPath = targetPath;
     } else {
       this.requireConnection();
+      this.remoteRevision++;
       const targetPath = normalizeRemotePath(requestedPath);
       await this.client.list(targetPath);
       if (this.disposed) return;
@@ -815,27 +854,28 @@ export class CommanderPanel {
     return Buffer.concat(chunks).toString('utf8');
   }
 
-  private isGrantSessionCurrent(sessionId: string): boolean {
-    return CommanderPanel.current === this && this.connected && !this.disposed && this.agentSessionId === sessionId;
+  private isGrantSessionCurrent(sessionId: string, connectionRevision: number): boolean {
+    return CommanderPanel.current === this && !this.disposed && this.agentSessionId === sessionId && this.connectionRevision === connectionRevision;
   }
 
-  private async grantAgentAccess(root: string, expectedSessionId: string): Promise<void> {
-    if (!this.isGrantSessionCurrent(expectedSessionId)) throw new Error('The FTP session changed while access was being granted. Try again.');
+  private async grantAgentAccess(root: string, localRoot: string, expectedSessionId: string, grantRemote = true, expectedRevision = this.connectionRevision): Promise<void> {
+    if (!this.isGrantSessionCurrent(expectedSessionId, expectedRevision)) throw new Error('The FTP session changed while access was being granted. Try again.');
     this.revokeAgentAccess();
-    this.requireConnection();
     this.agentRoot = root;
+    this.remoteAccessGranted = grantRemote;
+    this.localAgentRoot = localRoot;
+    this.localAgentGrantId = randomBytes(16).toString('hex');
     const bridge = new AgentBridge((request) => this.handleAgentRequest(request));
     this.agentBridge = bridge;
     try { await bridge.start(); }
     catch (error) {
       bridge.dispose();
-      if (this.agentBridge === bridge) this.agentBridge = undefined;
-      CommanderPanel.agentAccessChanged.fire();
+      if (this.agentBridge === bridge) this.revokeAgentAccess();
       throw error;
     }
-    if (!this.isGrantSessionCurrent(expectedSessionId) || this.agentBridge !== bridge) {
+    if (!this.isGrantSessionCurrent(expectedSessionId, expectedRevision) || this.agentBridge !== bridge) {
       bridge.dispose();
-      if (this.agentBridge === bridge) this.agentBridge = undefined;
+      if (this.agentBridge === bridge) this.revokeAgentAccess();
       throw new Error('The FTP session changed while access was being granted. Try again.');
     }
     if (process.platform !== 'win32') {
@@ -843,33 +883,48 @@ export class CommanderPanel {
       if (await isCodexConfigured(runtimePaths.runtime)) {
         try {
           const record = await publishCodexGrant(runtimePaths.grants, bridge, expectedSessionId);
-          if (!this.isGrantSessionCurrent(expectedSessionId) || this.agentBridge !== bridge) {
+          if (!this.isGrantSessionCurrent(expectedSessionId, expectedRevision) || this.agentBridge !== bridge) {
             await removeCodexGrant(record);
             bridge.dispose();
-            if (this.agentBridge === bridge) this.agentBridge = undefined;
+            if (this.agentBridge === bridge) this.revokeAgentAccess();
             throw new Error('The FTP session changed while access was being granted. Try again.');
           }
           this.codexGrantFile = record;
         } catch (error) {
-          if (!this.isGrantSessionCurrent(expectedSessionId) || this.agentBridge !== bridge) throw error;
+          if (!this.isGrantSessionCurrent(expectedSessionId, expectedRevision) || this.agentBridge !== bridge) throw error;
           void vscode.window.showWarningMessage(`FTP agent access is active in bm.ftp, but Codex could not be notified: ${errorMessage(error)}`);
         }
       }
     }
     CommanderPanel.agentAccessChanged.fire();
-    void vscode.window.showInformationMessage(`Read-only agent access granted for ${root}.`);
+    this.postAgentAccessState();
+    void vscode.window.showInformationMessage(`Agent access granted for ${grantRemote ? `FTP root ${root} and ` : ''}local root ${localRoot}.`);
+  }
+
+  private advanceConnectionRevision(): void {
+    this.connectionRevision++;
+    this.postAgentAccessState();
   }
 
   private revokeAgentAccess(): void {
+    this.agentAccessRevision++;
+    this.remoteAccessGranted = false;
+    this.localAgentRoot = undefined;
+    this.localAgentGrantId = '';
     void removeCodexGrant(this.codexGrantFile).catch(() => undefined);
     this.codexGrantFile = undefined;
     this.agentBridge?.dispose();
     this.agentBridge = undefined;
     CommanderPanel.agentAccessChanged.fire();
+    this.postAgentAccessState();
+  }
+
+  private postAgentAccessState(): void {
+    if (!this.disposed) this.post({ type: 'agent-access', agentAccessActive: Boolean(this.agentBridge && this.localAgentRoot), agentRemoteAccess: Boolean(this.agentBridge && this.localAgentRoot && this.remoteAccessGranted), agentAccessPending: this.agentGrantPending });
   }
 
   private getAgentServerDefinition(): vscode.McpStdioServerDefinition[] {
-    if (!this.connected || !this.agentBridge) return [];
+    if (!this.agentBridge) return [];
     const entry = path.join(this.context.extensionPath, 'mcp', 'server.mjs');
     return [new vscode.McpStdioServerDefinition(
       'bm.ftp', process.execPath, ['--ms-enable-electron-run-as-node', entry],
@@ -879,28 +934,37 @@ export class CommanderPanel {
   }
 
   private async handleAgentRequest(request: AgentRequest): Promise<unknown> {
-    if (!this.connected || !this.agentBridge) throw new Error('Agent access has been revoked.');
+    if (!this.agentBridge) throw new Error('Agent access has been revoked.');
     const bridge = this.agentBridge;
     const params = request.params;
     if (request.method === 'get_session') {
-      return { sessionId: this.agentSessionId, connected: true, protocol: this.profile?.protocol, allowedRoot: '/', capabilities: ['list_directory', 'search_files', 'read_file'], limits: { maxDirectoryEntries: 1000, maxSearchDepth: 8, maxSearchDirectories: 2000, maxSearchResults: 1000, maxReadBytes: 1048576, maxReadLines: 400 } };
+      return { sessionId: this.agentSessionId, mcpAvailable: true, connected: true, remoteConnected: this.connected, remoteAccessGranted: this.remoteAccessGranted, protocol: this.connected ? this.profile?.protocol : undefined, allowedRoot: this.agentRoot, localRoot: this.localAgentRoot, capabilities: [...(this.remoteAccessGranted ? ['list_directory', 'list_remote_directory', 'select_remote_files', 'search_files', 'read_file'] : []), ...(this.localAgentRoot ? ['get_local_pane', 'list_local_directory', 'select_local_files', 'find_local_directories', 'navigate_local', 'search_local_text_and_select', 'read_local_file'] : [])], limits: { maxDirectoryEntries: 1000, maxSearchDepth: 8, maxSearchDirectories: 2000, maxSearchResults: 1000, maxReadBytes: 1048576, maxReadLines: 400 } };
     }
     if (params.sessionId !== this.agentSessionId) throw new Error('The FTP session changed. Initialize the agent connection again.');
+    if (request.method.startsWith('local_') || ['get_local_pane', 'list_local_directory', 'select_local_files', 'find_local_directories', 'navigate_local', 'search_local_text_and_select', 'read_local_file'].includes(request.method)) {
+      return this.handleLocalAgentRequest(request.method, params, bridge);
+    }
+    const connectionRevision = this.connectionRevision;
+    this.requireRemoteAgentGrant(bridge, params.sessionId, connectionRevision);
+    if (request.method === 'list_remote_directory' || request.method === 'select_remote_files') {
+      return this.handleRemotePaneAgentRequest(request.method, params, bridge, connectionRevision);
+    }
     if (request.method === 'list_directory') {
       return this.enqueue(async () => {
-        this.requireAgentGrant(bridge, params.sessionId);
+        this.requireRemoteAgentGrant(bridge, params.sessionId, connectionRevision);
         const target = this.resolveAgentPath(String(params.path ?? '/'));
-        await this.assertAgentDirectoryPath(target, bridge, params.sessionId);
+        await this.assertAgentDirectoryPath(target, bridge, params.sessionId, connectionRevision);
         const entries = mapRemoteEntries(await this.client.list(target), target).filter((entry) => isSafeRemoteName(entry.name));
+        this.requireRemoteAgentGrant(bridge, params.sessionId, connectionRevision);
         const limit = boundedInteger(params.limit, 200, 1, 1000);
         return { path: String(params.path ?? '/'), entries: entries.slice(0, limit).map(({ name, path: entryPath, kind, size, modifiedTime }) => ({ name, path: this.toAgentPath(entryPath), kind, size, modifiedTime })), truncated: entries.length > limit };
       });
     }
     if (request.method === 'search_files') {
-      return this.enqueue(() => this.searchAgentFiles(params, bridge));
+      return this.enqueue(() => this.searchAgentFiles(params, bridge, connectionRevision));
     }
     if (request.method === 'read_file') {
-      return this.enqueue(() => this.readAgentFile(params, bridge));
+      return this.enqueue(() => this.readAgentFile(params, bridge, connectionRevision));
     }
     throw new Error('Unknown agent operation.');
   }
@@ -909,13 +973,232 @@ export class CommanderPanel {
     return resolveGrantedRemotePath(this.agentRoot, requested);
   }
 
+  private async handleRemotePaneAgentRequest(method: string, params: Record<string, unknown>, bridge: AgentBridge, connectionRevision: number): Promise<unknown> {
+    const currentPath = this.remotePath;
+    const revision = this.remoteRevision;
+    const target = this.resolveAgentPath(typeof params.path === 'string' ? params.path : this.toAgentPath(currentPath));
+    if (method === 'select_remote_files' && target !== currentPath) throw new Error('Selection is only allowed in the current remote folder.');
+    const entries = await this.enqueue(async () => {
+      this.requireRemoteAgentGrant(bridge, params.sessionId, connectionRevision);
+      await this.assertAgentDirectoryPath(target, bridge, params.sessionId, connectionRevision);
+      const listing = await this.client.list(target);
+      this.requireRemoteAgentGrant(bridge, params.sessionId, connectionRevision);
+      return listing.filter((entry) => isSafeRemoteName(entry.name) && !entry.isSymbolicLink && (entry.isFile || entry.isDirectory)).sort((a, b) => a.name.localeCompare(b.name));
+    });
+    if (method === 'list_remote_directory') {
+      return { path: this.toAgentPath(target), entries: entries.slice(0, 1000).map((entry) => ({ name: entry.name, path: this.toAgentPath(posix.join(target, entry.name)), type: entry.isDirectory ? 'directory' : 'file' })), truncated: entries.length > 1000 };
+    }
+    const names = params.names;
+    const filter = params.nameContains;
+    if ((Array.isArray(names)) === (typeof filter === 'string')) throw new Error('Provide either names or nameContains.');
+    if (Array.isArray(names) && (names.length === 0 || names.length > 1000 || names.some((name) => typeof name !== 'string' || !name || name.length > 255 || !isSafeRemoteName(name)))) throw new Error('Names must be basenames without path separators.');
+    if (typeof filter === 'string' && (!filter || filter.length > 255 || /[\\/\0-\x1f\x7f]/.test(filter))) throw new Error('nameContains must be a basename substring without path separators.');
+    const requestedNames = Array.isArray(names) ? new Set(names as string[]) : undefined;
+    const matching = entries.filter((entry) => (entry.isFile || params.includeDirectories === true) && (requestedNames ? requestedNames.has(entry.name) : entry.name.toLocaleLowerCase().includes((filter as string).toLocaleLowerCase())));
+    const paths = matching.slice(0, 1000).map((entry) => posix.join(target, entry.name));
+    this.requireRemoteAgentGrant(bridge, params.sessionId, connectionRevision);
+    if (this.remoteRevision !== revision || this.remotePath !== currentPath) throw new Error('The remote pane changed; retry.');
+    const result = await this.requestAgentUi({ action: 'select', pane: 'remote', expectedPath: currentPath, paths, includeDirectories: params.includeDirectories === true });
+    this.requireRemoteAgentGrant(bridge, params.sessionId, connectionRevision);
+    if (this.remoteRevision !== revision || this.remotePath !== currentPath) throw new Error('The remote pane changed during selection; retry.');
+    const allowed = new Set(paths);
+    const selected = [...new Set((result.selectedPaths ?? []).filter((selectedPath) => allowed.has(selectedPath)))];
+    const selectedPaths = selected.map((selectedPath) => this.toAgentPath(selectedPath));
+    return { path: this.toAgentPath(target), selectedPaths, count: selectedPaths.length, truncated: matching.length > paths.length, ...(requestedNames ? { unmatchedNames: [...requestedNames].filter((name) => !selected.some((selectedPath) => posix.basename(selectedPath) === name)) } : {}) };
+  }
+
+  private async handleLocalAgentRequest(method: string, params: Record<string, unknown>, bridge: AgentBridge): Promise<unknown> {
+    const root = this.localAgentRoot;
+    if (!root) throw new Error('Local agent access has not been granted.');
+    const grantId = this.localAgentGrantId;
+    const deadline = Date.now() + 25000;
+    const check = (): void => {
+      this.requireAgentGrant(bridge, params.sessionId);
+      if (this.localAgentRoot !== root || this.localAgentGrantId !== grantId) throw new Error('Local agent access has changed or been revoked.');
+      if (Date.now() > deadline) throw new Error('Local agent operation timed out.');
+    };
+    check();
+    if (method === 'get_local_pane') {
+      const target = await this.resolveLocalAgentPath(root, this.localPath);
+      check();
+      return { path: target, revision: this.localRevision, root };
+    }
+    if (method === 'list_local_directory' || method === 'select_local_files') {
+      const revision = this.localRevision;
+      const currentPath = this.localPath;
+      const target = await this.resolveLocalAgentPath(root, typeof params.path === 'string' ? params.path : currentPath);
+      if (method === 'select_local_files') {
+        const current = await this.resolveLocalAgentPath(root, currentPath);
+        if (target !== current) throw new Error('Selection is only allowed in the current local folder.');
+      }
+      const entries = (await fs.readdir(target, { withFileTypes: true }))
+        .filter((entry) => !entry.isSymbolicLink() && (entry.isFile() || entry.isDirectory()))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      check();
+      if (method === 'list_local_directory') {
+        return { path: path.relative(root, target) || '.', entries: entries.slice(0, 1000).map((entry) => ({ name: entry.name, path: path.relative(root, path.join(target, entry.name)), type: entry.isDirectory() ? 'directory' : 'file' })), truncated: entries.length > 1000 };
+      }
+      const names = params.names;
+      const filter = params.nameContains;
+      if ((Array.isArray(names)) === (typeof filter === 'string')) throw new Error('Provide either names or nameContains.');
+      if (Array.isArray(names) && (names.length === 0 || names.length > 1000 || names.some((name) => typeof name !== 'string' || !name || name.length > 255 || name === '.' || name === '..' || /[\\/\0\r\n]/.test(name)))) throw new Error('Names must be basenames without path separators.');
+      if (typeof filter === 'string' && (!filter || filter.length > 255 || /[\\/\0\r\n]/.test(filter))) throw new Error('nameContains must be a basename substring without path separators.');
+      const requestedNames = Array.isArray(names) ? new Set(names as string[]) : undefined;
+      const matching = entries.filter((entry) => (entry.isFile() || params.includeDirectories === true) && (requestedNames ? requestedNames.has(entry.name) : entry.name.toLocaleLowerCase().includes((filter as string).toLocaleLowerCase())));
+      const paths = matching.slice(0, 1000).map((entry) => path.join(target, entry.name));
+      if (this.localRevision !== revision || this.localPath !== currentPath) throw new Error('The local pane changed; retry.');
+      const result = await this.requestAgentUi({ action: 'select', expectedPath: currentPath, paths, includeDirectories: params.includeDirectories === true });
+      check();
+      if (this.localRevision !== revision || this.localPath !== currentPath) throw new Error('The local pane changed during selection; retry.');
+      const allowed = new Set(paths);
+      const selected = [...new Set((result.selectedPaths ?? []).filter((selectedPath) => allowed.has(selectedPath)))];
+      const selectedPaths = selected.map((selectedPath) => path.relative(root, selectedPath));
+      return { path: path.relative(root, target) || '.', selectedPaths, count: selectedPaths.length, truncated: matching.length > paths.length, ...(requestedNames ? { unmatchedNames: [...requestedNames].filter((name) => !selected.some((selectedPath) => path.basename(selectedPath) === name)) } : {}) };
+    }
+    if (method === 'find_local_directories') {
+      const query = String(params.nameQuery ?? '').trim().toLocaleLowerCase();
+      if (!query) throw new Error('Enter a directory name to search.');
+      const maxDepth = boundedInteger(params.maxDepth, 5, 0, 8);
+      const maxResults = boundedInteger(params.maxResults, 100, 1, 200);
+      const pending = [{ directory: root, depth: 0 }];
+      const matches: string[] = [];
+      let visited = 0, skipped = 0, truncated = false;
+      while (pending.length && visited < 500 && matches.length < maxResults) {
+        check();
+        const item = pending.shift()!;
+        let entries: fsSync.Dirent[];
+        try {
+          await this.resolveLocalAgentPath(root, item.directory);
+          entries = await fs.readdir(item.directory, { withFileTypes: true });
+        } catch { skipped++; continue; }
+        visited++;
+        for (const entry of entries) {
+          if (item.depth >= maxDepth) break;
+          if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+          const target = path.join(item.directory, entry.name);
+          if (entry.name.toLocaleLowerCase().includes(query)) matches.push(target);
+          pending.push({ directory: target, depth: item.depth + 1 });
+          if (matches.length >= maxResults || pending.length >= 2000) { truncated = true; break; }
+        }
+      }
+      check();
+      return { matches, visitedDirectories: visited, skipped, truncated: truncated || pending.length > 0 };
+    }
+    if (method === 'navigate_local') {
+      const revision = this.localRevision;
+      const oldPath = this.localPath;
+      const target = await this.resolveLocalAgentPath(root, String(params.path ?? ''));
+      const entries = this.addWorkspaceRelativePaths(await readLocalEntries(target));
+      check();
+      if (this.localRevision !== revision || this.localPath !== oldPath) throw new Error('The local pane changed; retry.');
+      const result = await this.requestAgentUi({ action: 'navigate', expectedPath: oldPath, path: target, entries });
+      check();
+      if (this.localRevision !== revision || this.localPath !== oldPath) throw new Error('The local pane changed; retry.');
+      this.localPath = target;
+      this.localRevision++;
+      return { path: target, revision: this.localRevision, selectedPaths: result.selectedPaths ?? [] };
+    }
+    if (method === 'search_local_text_and_select') {
+      const revision = this.localRevision;
+      const current = await this.resolveLocalAgentPath(root, this.localPath);
+      const query = String(params.text ?? '');
+      if (!query.trim() || query.length > 500) throw new Error('Enter a search text of up to 500 characters.');
+      const sensitive = params.caseSensitive === true;
+      const needle = sensitive ? query : query.toLocaleLowerCase();
+      const entries = await fs.readdir(current, { withFileTypes: true });
+      const matches: string[] = [];
+      let checked = 0, skipped = 0, truncated = false;
+      for (const entry of entries) {
+        check();
+        if (!entry.isFile() || entry.isSymbolicLink() || isSensitiveAgentFilename(entry.name)) { if (entry.isFile() || entry.isSymbolicLink()) skipped++; continue; }
+        if (checked >= 500 || matches.length >= 200) { truncated = true; break; }
+        checked++;
+        const target = path.join(current, entry.name);
+        try {
+          const text = await this.readLocalAgentText(root, target);
+          if ((sensitive ? text : text.toLocaleLowerCase()).includes(needle)) matches.push(target);
+        } catch { skipped++; }
+      }
+      check();
+      if (this.localRevision !== revision || this.localPath !== current) throw new Error('The local pane changed during the search; retry.');
+      const result = await this.requestAgentUi({ action: 'select', expectedPath: current, paths: matches });
+      check();
+      if (this.localRevision !== revision || this.localPath !== current) throw new Error('The local pane changed during selection; retry.');
+      return { path: current, selectedPaths: result.selectedPaths ?? [], matchedCount: matches.length, checked, skipped, truncated };
+    }
+    if (method === 'read_local_file') {
+      const target = await this.resolveLocalAgentPath(root, String(params.path ?? ''));
+      const content = await this.readLocalAgentText(root, target);
+      check();
+      const lines = content.split(/\r?\n/);
+      const startLine = boundedInteger(params.startLine, 1, 1, Number.MAX_SAFE_INTEGER);
+      const maxLines = boundedInteger(params.maxLines, 200, 1, 400);
+      const output = lines.slice(startLine - 1, startLine - 1 + maxLines).join('\n');
+      const text = safeUtf8Prefix(output, 64 * 1024);
+      return { path: target, text, startLine, truncated: startLine - 1 + maxLines < lines.length || text.length < output.length, encoding: 'utf-8' };
+    }
+    throw new Error('Unknown local agent operation.');
+  }
+
+  private async resolveLocalAgentPath(root: string, requested: string): Promise<string> {
+    if (!requested || requested.includes('\0')) throw new Error('Enter a valid local path.');
+    if ((await fs.lstat(root)).isSymbolicLink() || await fs.realpath(root) !== root) throw new Error('The granted local root changed. Grant access again.');
+    const target = path.resolve(root, requested);
+    const relative = path.relative(root, target);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('Path is outside the granted local root.');
+    let current = root;
+    for (const part of relative.split(path.sep).filter(Boolean)) {
+      current = path.join(current, part);
+      if ((await fs.lstat(current)).isSymbolicLink()) throw new Error('Symbolic links are not available through local agent access.');
+    }
+    const real = await fs.realpath(target);
+    const realRelative = path.relative(root, real);
+    if (realRelative === '..' || realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) throw new Error('Path is outside the granted local root.');
+    return real;
+  }
+
+  private async readLocalAgentText(root: string, requested: string): Promise<string> {
+    if (isSensitiveAgentFilename(path.basename(requested))) throw new Error('Sensitive file is blocked.');
+    const target = await this.resolveLocalAgentPath(root, requested);
+    const handle = await fs.open(target, fsSync.constants.O_RDONLY | (fsSync.constants.O_NOFOLLOW ?? 0));
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error('Only text files up to 1 MiB can be read.');
+      const buffer = Buffer.alloc(1024 * 1024 + 1);
+      let bytesRead = 0;
+      while (bytesRead < buffer.length) {
+        const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+        if (!result.bytesRead) break;
+        bytesRead += result.bytesRead;
+      }
+      if (bytesRead > 1024 * 1024) throw new Error('File exceeded the read limit.');
+      const bytes = buffer.subarray(0, bytesRead);
+      if (bytes.includes(0)) throw new Error('Binary file.');
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } finally { await handle.close(); }
+  }
+
+  private async requestAgentUi(message: object): Promise<PanelMessage> {
+    const requestId = randomBytes(16).toString('hex');
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this.agentUiRequests.delete(requestId); reject(new Error('The local pane did not acknowledge the request.')); }, 5000);
+      this.agentUiRequests.set(requestId, (result) => {
+        clearTimeout(timer);
+        this.agentUiRequests.delete(requestId);
+        if (!result.success) reject(new Error(result.error || 'The local pane rejected the request.'));
+        else resolve(result);
+      });
+      this.post({ type: 'agent-ui', requestId, expiresAt: Date.now() + 4500, ...message });
+    });
+  }
+
   private toAgentPath(remotePath: string): string {
     return toGrantedRemotePath(this.agentRoot, remotePath);
   }
 
-  private async searchAgentFiles(params: Record<string, unknown>, bridge: AgentBridge): Promise<unknown> {
+  private async searchAgentFiles(params: Record<string, unknown>, bridge: AgentBridge, connectionRevision: number): Promise<unknown> {
     const root = this.resolveAgentPath(String(params.path ?? '/'));
-    await this.assertAgentDirectoryPath(root, bridge, params.sessionId);
+    await this.assertAgentDirectoryPath(root, bridge, params.sessionId, connectionRevision);
     const query = String(params.nameQuery ?? '').toLocaleLowerCase();
     if (!query.trim()) throw new Error('Enter a file or folder name to search for.');
     const recursive = params.recursive !== false;
@@ -926,11 +1209,12 @@ export class CommanderPanel {
     const visited = new Set<string>();
     let truncated = false;
     while (pending.length && visited.size < 2000 && matches.length < maxResults) {
-      this.requireAgentGrant(bridge, params.sessionId);
+      this.requireRemoteAgentGrant(bridge, params.sessionId, connectionRevision);
       const current = pending.shift()!;
       if (visited.has(current.path)) continue;
       visited.add(current.path);
       const entries = (await this.client.list(current.path)).filter((entry) => isSafeRemoteName(entry.name));
+      this.requireRemoteAgentGrant(bridge, params.sessionId, connectionRevision);
       for (const entry of entries) {
         const entryPath = posix.join(current.path, entry.name);
         const kind = entry.isDirectory ? 'directory' : 'file';
@@ -943,16 +1227,16 @@ export class CommanderPanel {
     return { matches, truncated, visitedDirectories: visited.size };
   }
 
-  private async readAgentFile(params: Record<string, unknown>, bridge: AgentBridge): Promise<unknown> {
-    this.requireAgentGrant(bridge, params.sessionId);
+  private async readAgentFile(params: Record<string, unknown>, bridge: AgentBridge, connectionRevision: number): Promise<unknown> {
+    this.requireRemoteAgentGrant(bridge, params.sessionId, connectionRevision);
     const target = this.resolveAgentPath(String(params.path ?? ''));
     const name = posix.basename(target);
     if (isSensitiveAgentFilename(name)) {
       throw new Error('This file is blocked because its name may identify credentials or a private key.');
     }
-    await this.assertAgentDirectoryPath(posix.dirname(target), bridge, params.sessionId);
+    await this.assertAgentDirectoryPath(posix.dirname(target), bridge, params.sessionId, connectionRevision);
     const listing = await this.client.list(posix.dirname(target));
-    this.requireAgentGrant(bridge, params.sessionId);
+    this.requireRemoteAgentGrant(bridge, params.sessionId, connectionRevision);
     const file = listing.find((entry) => entry.name === name && !entry.isDirectory && !entry.isSymbolicLink);
     if (!file) throw new Error('The requested remote file was not found.');
     const maxBytes = 1024 * 1024;
@@ -974,16 +1258,17 @@ export class CommanderPanel {
     try { await this.client.downloadTo(stream, target); }
     catch (error) {
       if (oversized) {
+        this.requireRemoteAgentGrant(bridge, params.sessionId, connectionRevision);
         this.connected = false;
         this.stopConnectionMonitor();
         this.client.close();
-        this.revokeAgentAccess();
+        this.advanceConnectionRevision();
         this.post({ type: 'data', remotePath: this.remotePath, remoteEntries: [], profile: this.profile, connected: false, transfer: 'Server connection closed after an oversized agent read.' });
         throw new Error('File exceeded the 1 MiB read limit. The server connection closed to stop the transfer; reconnect before continuing.');
       }
       throw error;
     }
-    this.requireAgentGrant(bridge, params.sessionId);
+    this.requireRemoteAgentGrant(bridge, params.sessionId, connectionRevision);
     const bytes = Buffer.concat(chunks);
     if (bytes.includes(0)) throw new Error('Binary files cannot be read through the agent interface.');
     let text: string;
@@ -999,16 +1284,24 @@ export class CommanderPanel {
   }
 
   private requireAgentGrant(bridge: AgentBridge, sessionId: unknown): void {
-    if (!this.connected || this.agentBridge !== bridge || sessionId !== this.agentSessionId) {
-      throw new Error('Agent access has been revoked or the FTP session changed.');
+    if (this.agentBridge !== bridge || sessionId !== this.agentSessionId || this.disposed) {
+      throw new Error('Agent access has been revoked or the session changed.');
     }
   }
 
-  private async assertAgentDirectoryPath(directory: string, bridge: AgentBridge, sessionId: unknown): Promise<void> {
+  private requireRemoteAgentGrant(bridge: AgentBridge, sessionId: unknown, connectionRevision: number): void {
+    this.requireAgentGrant(bridge, sessionId);
+    if (this.connectionRevision !== connectionRevision) throw new Error('The FTP connection changed during the request.');
+    if (!this.connected) throw new Error('Remote FTP access is unavailable because the server is disconnected.');
+    if (!this.remoteAccessGranted) throw new Error('Remote FTP agent access is not granted for this connection.');
+  }
+
+  private async assertAgentDirectoryPath(directory: string, bridge: AgentBridge, sessionId: unknown, connectionRevision: number): Promise<void> {
     let current = '/';
     for (const segment of directory.split('/').filter(Boolean)) {
-      this.requireAgentGrant(bridge, sessionId);
+      this.requireRemoteAgentGrant(bridge, sessionId, connectionRevision);
       const entry = (await this.client.list(current)).find((candidate) => candidate.name === segment);
+      this.requireRemoteAgentGrant(bridge, sessionId, connectionRevision);
       if (!entry || !entry.isDirectory || entry.isSymbolicLink) throw new Error('The remote path is missing, is not a folder, or crosses a symbolic link.');
       current = posix.join(current, segment);
     }
@@ -1118,7 +1411,7 @@ export class CommanderPanel {
     this.stopConnectionMonitor();
     this.connected = false;
     this.client.close();
-    this.revokeAgentAccess();
+    this.advanceConnectionRevision();
     this.post({
       type: 'data', remotePath: this.remotePath, remoteEntries: [], profile: this.profile,
       connected: false, transfer: `${this.profile?.protocol === 'sftp' ? 'SFTP' : 'FTP'} connection lost. Click Connect to reconnect.`

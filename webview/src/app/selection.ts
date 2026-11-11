@@ -20,6 +20,26 @@ export function isSelectionToggleKey(key: string): boolean {
   return key === 'Insert' || key === ' ';
 }
 
+export function shouldHandleSelectAll(
+  key: string,
+  modifiers: { ctrlKey: boolean; metaKey: boolean },
+  editableTarget: boolean,
+  focusedPane: 'local' | 'remote' | null,
+  activePane: 'local' | 'remote'
+): boolean {
+  return (modifiers.ctrlKey || modifiers.metaKey)
+    && key.toLowerCase() === 'a'
+    && !editableTarget
+    && focusedPane === activePane;
+}
+
+export function toggleAllSelection(entries: SelectableFile[], selectedPaths: string[]): SelectionState {
+  const paths = entries.map((entry) => entry.path);
+  const allSelected = paths.length > 0 && paths.every((path) => selectedPaths.includes(path));
+  const nextPaths = allSelected ? [] : paths;
+  return { paths: nextPaths, anchorPath: nextPaths[0] ?? '' };
+}
+
 export function updateSelection(
   entries: SelectableFile[],
   selectedPaths: string[],

@@ -9,7 +9,7 @@ import { ConfirmationDialogComponent } from './components/confirmation-dialog/co
 import { ErrorDialogComponent } from './components/error-dialog/error-dialog.component';
 import type { FileEntry, SortColumn, SortState } from './components/file-view/file-view.component';
 import { FilePaneComponent } from './components/file-pane/file-pane.component';
-import { hasVisibleFileSelection } from './selection';
+import { hasVisibleFileSelection, shouldHandleSelectAll, toggleAllSelection } from './selection';
 import { CopyService } from './services/copy.service';
 import { FileListService } from './services/file-list.service';
 import { Pane, SelectionService } from './services/selection.service';
@@ -30,6 +30,18 @@ interface HostMessage {
   error?: string;
   transfer?: string;
   progress?: CopyProgress | null;
+  requestId?: string;
+  expiresAt?: number;
+  action?: 'navigate' | 'select';
+  expectedPath?: string;
+  path?: string;
+  paths?: string[];
+  entries?: FileEntry[];
+  includeDirectories?: boolean;
+  pane?: Pane;
+  agentAccessActive?: boolean;
+  agentRemoteAccess?: boolean;
+  agentAccessPending?: boolean;
 }
 
 @Component({
@@ -53,7 +65,21 @@ export class AppComponent implements OnInit, OnDestroy {
   private removeMessageListener?: () => void;
   private readonly handleKeydown = (event: KeyboardEvent) => {
     if (blockBackgroundKeydown(this.modalOpen, event)) return;
-    if (!isEditableTarget(event.target)) {
+    const editableTarget = isEditableTarget(event.target);
+    const focusedPane = event.target instanceof HTMLElement
+      ? event.target.closest('bm-file-pane')?.getAttribute('pane')
+      : null;
+    const pane = focusedPane === 'local' || focusedPane === 'remote' ? focusedPane : null;
+    if (shouldHandleSelectAll(event.key, event, editableTarget, pane, this.activePane)) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      const nextSelection = toggleAllSelection(this.filteredEntries(this.activePane), this.selection.get(this.activePane));
+      this.selection.set(this.activePane, nextSelection.paths, nextSelection.anchorPath);
+      this.changeDetector.detectChanges();
+      return;
+    }
+    if (!editableTarget) {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
         event.preventDefault();
         (this.activePane === 'local' ? this.localPane : this.remotePane)?.focusSearch();
@@ -84,6 +110,9 @@ export class AppComponent implements OnInit, OnDestroy {
   get remoteSelection(): string[] { return this.selection.get('remote'); }
   activePane: Pane = 'local';
   connected = false;
+  agentAccessActive = false;
+  agentRemoteAccess = false;
+  agentAccessPending = false;
   busy = false;
   status = 'Choose a server to connect.';
   error = '';
@@ -115,13 +144,13 @@ export class AppComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.removeMessageListener = this.bridge.listen<HostMessage>((message) => this.receive(message));
-    window.addEventListener('keydown', this.handleKeydown);
+    window.addEventListener('keydown', this.handleKeydown, true);
     this.bridge.postMessage({ type: 'ready' });
   }
 
   ngOnDestroy(): void {
     this.removeMessageListener?.();
-    window.removeEventListener('keydown', this.handleKeydown);
+    window.removeEventListener('keydown', this.handleKeydown, true);
   }
 
   updateProfile(profile: ConnectionProfile): void {
@@ -268,7 +297,45 @@ export class AppComponent implements OnInit, OnDestroy {
     this.bridge.postMessage({ type: 'copy-path', pane, path, relative });
   }
 
+  toggleAgentAccess(): void {
+    if (this.agentAccessPending) return;
+    this.agentAccessPending = true;
+    this.bridge.postMessage({ type: 'toggle-agent-access' });
+  }
+
   private receive(message: HostMessage): void {
+    if (message.type === 'agent-ui') {
+      const response = { type: 'agent-ui-result', requestId: message.requestId, success: false, error: '', selectedPaths: [] as string[] };
+      const pane = message.pane ?? 'local';
+      const currentPath = pane === 'local' ? this.localPath : this.remotePath;
+      const loading = pane === 'local' ? this.localLoading : this.remoteLoading;
+      if (!message.requestId || !message.expiresAt || Date.now() > message.expiresAt || currentPath !== message.expectedPath || loading) {
+        response.error = `The ${pane} pane changed or the request expired.`;
+      } else if (pane === 'local' && message.action === 'navigate' && message.path && message.entries) {
+        this.localPath = message.path;
+        this.localEntries = message.entries;
+        this.localSearch = '';
+        this.setSelection('local', [], '');
+        this.activePane = 'local';
+        response.success = true;
+      } else if (message.action === 'select' && message.paths) {
+        const requested = new Set(message.paths);
+        const entries = pane === 'local' ? this.localEntries : this.remoteEntries;
+        const selected = entries.filter((entry) => (entry.kind === 'file' || message.includeDirectories === true) && requested.has(entry.path)).map((entry) => entry.path);
+        if (pane === 'local') this.localSearch = '';
+        else this.remoteSearch = '';
+        this.setSelection(pane, selected, selected.at(-1) ?? '');
+        this.activePane = pane;
+        response.selectedPaths = selected;
+        response.success = true;
+      } else response.error = 'Invalid local pane request.';
+      this.changeDetector.detectChanges();
+      this.bridge.postMessage(response);
+      return;
+    }
+    if (message.agentAccessActive !== undefined) this.agentAccessActive = message.agentAccessActive;
+    if (message.agentRemoteAccess !== undefined) this.agentRemoteAccess = message.agentRemoteAccess;
+    if (message.agentAccessPending !== undefined) this.agentAccessPending = message.agentAccessPending;
     if (message.progress !== undefined) this.copyProgress = message.progress;
     if (message.savedProfiles !== undefined) {
       this.savedProfiles = message.savedProfiles;

@@ -1,8 +1,8 @@
 <div class="commander-background" [inert]="modalOpen" [attr.aria-hidden]="modalOpen ? 'true' : null">
-  <bm-connection-bar [profile]="profile" [password]="password" [connected]="connected" [busy]="busy || forgetRequestPending" [logoUrl]="logoUrl" [savedProfiles]="savedProfiles"
+  <bm-connection-bar [profile]="profile" [password]="password" [connected]="connected" [busy]="busy || forgetRequestPending" [logoUrl]="logoUrl" [savedProfiles]="savedProfiles" [agentAccessActive]="agentAccessActive" [agentRemoteAccess]="agentRemoteAccess" [agentAccessPending]="agentAccessPending"
     (profileChange)="updateProfile($event)" (passwordChange)="password = $event"
     (savedProfileSelected)="selectSavedProfile($event)" (forgetRequested)="forgetSavedProfile($event)"
-    (connectRequested)="connect()" (disconnectRequested)="disconnect()"></bm-connection-bar>
+    (connectRequested)="connect()" (disconnectRequested)="disconnect()" (agentAccessToggleRequested)="toggleAgentAccess()"></bm-connection-bar>
 
   <main class="commander">
     <bm-file-pane #localPane pane="local" [active]="activePane === 'local'" [connected]="connected" [loading]="localLoading" [path]="localPath"

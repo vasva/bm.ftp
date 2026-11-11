@@ -33,7 +33,7 @@ test('Codex MCP stays running while FTP access is granted, revoked, and granted 
   await client.connect(transport);
 
   const { tools } = await client.listTools();
-  assert.deepEqual(tools.map((tool) => tool.name).sort(), ['get_session', 'list_directory', 'read_file', 'search_files']);
+  assert.deepEqual(tools.map((tool) => tool.name).sort(), ['find_local_directories', 'get_local_pane', 'get_session', 'list_directory', 'list_local_directory', 'list_remote_directory', 'navigate_local', 'read_file', 'read_local_file', 'search_files', 'search_local_text_and_select', 'select_local_files', 'select_remote_files']);
   const unavailable = await client.callTool({ name: 'get_session', arguments: {} });
   assert.equal(unavailable.isError, true);
   assert.match(unavailable.content[0].text, /not currently granted/);

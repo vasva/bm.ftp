@@ -1,4 +1,4 @@
-<section class="pane" [class.active]="active" (click)="paneActivated.emit(pane)">
+<section class="pane" tabindex="-1" [class.active]="active" (click)="activatePane($event)" (focusin)="paneActivated.emit(pane)">
   <bm-pane-header [pane]="pane" [connected]="connected" (refreshRequested)="refreshRequested.emit(pane)" (parentRequested)="parentRequested.emit(pane)"></bm-pane-header>
   <bm-path-bar [pane]="pane" [path]="path" [loading]="loading" [connected]="connected" (pathSelected)="pathSelected.emit({ pane, path: $event })"></bm-path-bar>
   <bm-file-view [pane]="pane" [directoryPath]="path" [entries]="entries" [selectedPaths]="selectedPaths" [search]="search" [sort]="sort" [connected]="connected"

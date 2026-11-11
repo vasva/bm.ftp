@@ -85,7 +85,7 @@ test('installed Codex launcher starts the server using its installed registry he
     throw new Error(`${error instanceof Error ? error.message : String(error)}${serverStderr ? `; stderr: ${serverStderr}` : ''}`);
   }
   const { tools } = await client.listTools();
-  assert.deepEqual(tools.map((tool) => tool.name).sort(), ['get_session', 'list_directory', 'read_file', 'search_files']);
+  assert.deepEqual(tools.map((tool) => tool.name).sort(), ['find_local_directories', 'get_local_pane', 'get_session', 'list_directory', 'list_local_directory', 'list_remote_directory', 'navigate_local', 'read_file', 'read_local_file', 'search_files', 'search_local_text_and_select', 'select_local_files', 'select_remote_files']);
 });
 
 test('Codex integration remains opted out until its launcher has been explicitly installed', async (t) => {
@@ -106,6 +106,16 @@ test('Codex discovery binds to the only live explicitly granted bridge', async (
   const result = await (await registryModule()).findGrantedBridge(grants);
   assert.equal(result.bridgeId, activeBridge.bridgeId);
   assert.equal(result.generation, 'generation-one');
+});
+
+test('Codex discovery accepts a local-only bridge while FTP is disconnected', async (t) => {
+  const { grants } = await registry(t);
+  const activeBridge = new AgentBridge(async () => ({ connected: true, mcpAvailable: true, remoteConnected: false, sessionId: 'local-session' }));
+  await activeBridge.start();
+  t.after(() => activeBridge.dispose());
+  await publishCodexGrant(grants, activeBridge, 'local-generation');
+  const result = await (await registryModule()).findGrantedBridge(grants);
+  assert.equal(result.bridgeId, activeBridge.bridgeId);
 });
 
 test('Codex discovery fails closed when there is no live grant', async (t) => {
