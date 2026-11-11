@@ -67,7 +67,7 @@ async function toolCall(method, params) {
 const server = new McpServer({ name: 'bm.ftp', version: '0.2.0' });
 const sessionInput = z.object({ sessionId: z.string().min(1) }).strict();
 server.registerTool('get_session', {
-  description: 'Return the active FTP session and the access limits granted in VS Code.',
+  description: 'Return MCP availability, FTP connection and authorization status, granted capabilities, and access limits. connected describes the MCP bridge; remoteConnected describes FTP.',
   inputSchema: z.object({}).strict(),
   annotations: { readOnlyHint: true }
 }, () => toolCall('get_session', {}));
@@ -77,6 +77,18 @@ server.registerTool('list_directory', {
   inputSchema: sessionInput.extend({ path: z.string().default('/'), limit: z.number().int().min(1).max(1000).default(200) }).strict(),
   annotations: { readOnlyHint: true }
 }, ({ sessionId, path, limit }) => toolCall('list_directory', { sessionId, path, limit }));
+
+server.registerTool('list_remote_directory', {
+  description: 'List direct entries in a granted FTP directory without reading file contents; omit path for the open remote pane. Paths are relative to the granted FTP root.',
+  inputSchema: sessionInput.extend({ path: z.string().min(1).optional() }).strict(),
+  annotations: { readOnlyHint: true }
+}, (params) => toolCall('list_remote_directory', params));
+
+server.registerTool('select_remote_files', {
+  description: 'Replace the selection in the open remote pane by exact basenames or a case-insensitive basename substring. Does not read file contents; clears the pane name filter.',
+  inputSchema: sessionInput.extend({ path: z.string().min(1).optional(), names: z.array(z.string().min(1).max(255)).min(1).max(1000).optional(), nameContains: z.string().min(1).max(255).optional(), includeDirectories: z.boolean().default(false) }).strict().refine((value) => (value.names !== undefined) !== (value.nameContains !== undefined), 'Provide either names or nameContains.'),
+  annotations: { readOnlyHint: false, destructiveHint: false }
+}, (params) => toolCall('select_remote_files', params));
 
 server.registerTool('search_files', {
   description: 'Search FTP file and folder names within the granted root. Search does not inspect file contents.',
@@ -89,5 +101,47 @@ server.registerTool('read_file', {
   inputSchema: sessionInput.extend({ path: z.string().min(1), startLine: z.number().int().min(1).default(1), maxLines: z.number().int().min(1).max(400).default(200) }).strict(),
   annotations: { readOnlyHint: true }
 }, ({ sessionId, ...params }) => toolCall('read_file', { sessionId, ...params }));
+
+server.registerTool('get_local_pane', {
+  description: 'Get the local pane path and revision, within the separately granted local root.',
+  inputSchema: sessionInput,
+  annotations: { readOnlyHint: true }
+}, (params) => toolCall('get_local_pane', params));
+
+server.registerTool('list_local_directory', {
+  description: 'List direct local directory entries without reading contents or following symbolic links. Paths in the result are relative to the granted local root; omit path for the open pane.',
+  inputSchema: sessionInput.extend({ path: z.string().min(1).optional() }).strict(),
+  annotations: { readOnlyHint: true }
+}, (params) => toolCall('list_local_directory', params));
+
+server.registerTool('select_local_files', {
+  description: 'Replace the selection in the open local pane by exact basenames or a case-insensitive basename substring. Does not read file contents; clears the pane name filter.',
+  inputSchema: sessionInput.extend({ path: z.string().min(1).optional(), names: z.array(z.string().min(1).max(255)).min(1).max(1000).optional(), nameContains: z.string().min(1).max(255).optional(), includeDirectories: z.boolean().default(false) }).strict().refine((value) => (value.names !== undefined) !== (value.nameContains !== undefined), 'Provide either names or nameContains.'),
+  annotations: { readOnlyHint: false, destructiveHint: false }
+}, (params) => toolCall('select_local_files', params));
+
+server.registerTool('find_local_directories', {
+  description: 'Find directory names within the separately granted local root; symbolic links are not followed.',
+  inputSchema: sessionInput.extend({ nameQuery: z.string().min(1).max(200), maxDepth: z.number().int().min(0).max(8).default(5), maxResults: z.number().int().min(1).max(200).default(100) }).strict(),
+  annotations: { readOnlyHint: true }
+}, (params) => toolCall('find_local_directories', params));
+
+server.registerTool('navigate_local', {
+  description: 'Navigate the local pane to a directory within the separately granted local root. This changes the visible pane.',
+  inputSchema: sessionInput.extend({ path: z.string().min(1) }).strict(),
+  annotations: { readOnlyHint: false, destructiveHint: false }
+}, (params) => toolCall('navigate_local', params));
+
+server.registerTool('search_local_text_and_select', {
+  description: 'Search text in files directly in the open local folder and select matching visible files. This changes the pane selection and clears its name filter.',
+  inputSchema: sessionInput.extend({ text: z.string().min(1).max(500), caseSensitive: z.boolean().default(false) }).strict(),
+  annotations: { readOnlyHint: false, destructiveHint: false }
+}, (params) => toolCall('search_local_text_and_select', params));
+
+server.registerTool('read_local_file', {
+  description: 'Read bounded UTF-8 text from a non-sensitive file under the separately granted local root.',
+  inputSchema: sessionInput.extend({ path: z.string().min(1), startLine: z.number().int().min(1).default(1), maxLines: z.number().int().min(1).max(400).default(200) }).strict(),
+  annotations: { readOnlyHint: true }
+}, (params) => toolCall('read_local_file', params));
 
 await serveStdio(() => server);

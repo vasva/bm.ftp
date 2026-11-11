@@ -19,6 +19,9 @@ export class ConnectionBarComponent {
   @Input() busy = false;
   @Input() logoUrl = '';
   @Input() savedProfiles: ConnectionProfile[] = [];
+  @Input() agentAccessActive = false;
+  @Input() agentRemoteAccess = false;
+  @Input() agentAccessPending = false;
 
   @Output() profileChange = new EventEmitter<ConnectionProfile>();
   @Output() passwordChange = new EventEmitter<string>();
@@ -26,6 +29,13 @@ export class ConnectionBarComponent {
   @Output() disconnectRequested = new EventEmitter<void>();
   @Output() savedProfileSelected = new EventEmitter<ConnectionProfile>();
   @Output() forgetRequested = new EventEmitter<ConnectionProfile>();
+  @Output() agentAccessToggleRequested = new EventEmitter<void>();
+
+  get agentAccessLabel(): string {
+    if (!this.agentAccessActive) return 'MCP access disabled — click to grant';
+    if (this.agentRemoteAccess) return this.connected ? 'MCP local and FTP access authorized — click to revoke' : 'MCP local and FTP access authorized; FTP disconnected — click to revoke';
+    return this.connected ? 'MCP local access enabled — click to grant FTP access' : 'MCP local access enabled — click to revoke';
+  }
 
   get selectedSavedIndex(): string {
     const index = this.savedProfiles.findIndex((saved) => sameConnectionProfile(saved, this.profile));

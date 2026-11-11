@@ -108,6 +108,16 @@ test('Codex discovery binds to the only live explicitly granted bridge', async (
   assert.equal(result.generation, 'generation-one');
 });
 
+test('Codex discovery accepts a local-only bridge while FTP is disconnected', async (t) => {
+  const { grants } = await registry(t);
+  const activeBridge = new AgentBridge(async () => ({ connected: true, mcpAvailable: true, remoteConnected: false, sessionId: 'local-session' }));
+  await activeBridge.start();
+  t.after(() => activeBridge.dispose());
+  await publishCodexGrant(grants, activeBridge, 'local-generation');
+  const result = await (await registryModule()).findGrantedBridge(grants);
+  assert.equal(result.bridgeId, activeBridge.bridgeId);
+});
+
 test('Codex discovery fails closed when there is no live grant', async (t) => {
   const { grants } = await registry(t);
   await assert.rejects((await registryModule()).findGrantedBridge(grants), /not currently granted/);

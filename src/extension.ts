@@ -14,7 +14,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const enableAgentAccess = vscode.commands.registerCommand('bmFtp.enableAgentAccess', async () => {
     try {
-      await CommanderPanel.enableAgentAccess();
+      await CommanderPanel.enableAgentAccess(context);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not enable agent access.';
       void vscode.window.showErrorMessage(message);
@@ -22,7 +22,7 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   const revokeAgentAccess = vscode.commands.registerCommand('bmFtp.revokeAgentAccess', () => {
     CommanderPanel.revokeAgentAccess();
-    void vscode.window.showInformationMessage('Read-only agent access revoked.');
+    void vscode.window.showInformationMessage('FTP and local agent access revoked.');
   });
   const copyCodexConfiguration = vscode.commands.registerCommand('bmFtp.copyCodexConfiguration', async () => {
     try {
